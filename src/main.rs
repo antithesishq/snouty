@@ -28,7 +28,7 @@ use snouty::params::{
     ANT_REPORT_RECIPIENTS, ANT_SETUP_TIMEOUT, ANT_SOURCE, ANT_TEST_NAME, DuplicateKey, Params,
 };
 use snouty::run_metadata::{self, Detect, RunKind};
-use snouty::settings::{RemovedFeature, Settings, UpdateChannel};
+use snouty::settings::{Settings, UpdateChannel};
 use snouty::stdio::{self, StreamClosed};
 use snouty::validate;
 
@@ -90,7 +90,6 @@ async fn run(cli: Cli) -> Result<()> {
         json,
         verbose,
         settings: settings_path,
-        profile,
         command,
     } = cli;
     // The global output flags travel together from here on; every command
@@ -103,28 +102,7 @@ async fn run(cli: Cli) -> Result<()> {
 
     // Resolve settings once, up front. Each command that reads settings
     // unwraps the result, so a bad settings file stops only those commands.
-    let settings = Settings::resolve(settings_path.clone(), profile.clone());
-    // The credential helper runs on each push or pull, a shell runs
-    // completions at each start, and the MCP server warned once already.
-    if !matches!(
-        command,
-        Commands::DockerCredential { .. } | Commands::Completions { .. }
-    ) && !snouty::mcp::in_tool_call()
-    {
-        let mut removed_features = settings
-            .as_ref()
-            .map_or_else(|_| Vec::new(), Settings::removed_features);
-        if let Commands::Settings { command } = &command {
-            match command {
-                SettingsCommands::Show => {}
-                SettingsCommands::Trust(_) => removed_features.push(RemovedFeature::Trust),
-                SettingsCommands::Deny(_) => removed_features.push(RemovedFeature::Deny),
-            }
-        }
-        if let Some(warning) = snouty::settings::removal_warning(&removed_features) {
-            eprintln!("{}", snouty::wrap_if_tty(&warning));
-        }
-    }
+    let settings = Settings::resolve(settings_path.clone());
     let result = match command {
         Commands::Completions { shell } => cmd_completions(shell).map_err(Report::new),
         Commands::Version => cmd_version(output.json),
@@ -132,24 +110,16 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Docs { offline, command } => docs::cmd_docs(command, offline, output).await,
         Commands::Settings { command } => match command {
             SettingsCommands::Show => snouty::settings::cmd_settings_show(&settings?, output.json),
-            // These do not read settings, so they work while an untrusted
-            // file blocks other commands.
-            SettingsCommands::Trust(args) => snouty::settings::trust(&args.path)
-                .map(|path| eprintln!("Trusted {}", path.display())),
-            SettingsCommands::Deny(args) => snouty::settings::deny(&args.path)
-                .map(|path| eprintln!("Denied {}", path.display())),
         },
         Commands::Login {
             tenant,
             registry,
             base_url,
         } => cmd_login(tenant, registry, base_url, &settings?, output).await,
-        Commands::Launch(args) => {
-            cmd_launch(args, &settings?, settings_path, profile, output).await
-        }
+        Commands::Launch(args) => cmd_launch(args, &settings?, settings_path, output).await,
         Commands::Run(args) => {
             eprintln!("warning: `snouty run` is deprecated, use `snouty launch` instead");
-            cmd_launch(args, &settings?, settings_path, profile, output).await
+            cmd_launch(args, &settings?, settings_path, output).await
         }
         Commands::Runs { command } => snouty::runs::cmd_runs(command, &settings?, output).await,
         Commands::Debug(args) => {
@@ -160,18 +130,17 @@ async fn run(cli: Cli) -> Result<()> {
         Commands::Doctor(args) => {
             snouty::doctor::cmd_doctor(&settings?, output, args.offline).await
         }
-        // The credential helper selects its settings itself, from the flags
-        // and their environment variables (see `registry::select_settings`),
-        // so it ignores `settings`.
+        // The credential helper resolves its settings itself (see
+        // `registry::select_settings`), so that a broken settings file does
+        // not fail a request for another registry.
         Commands::DockerCredential { action } => {
-            snouty::docker_credential::run(action, settings_path, profile).await
+            snouty::docker_credential::run(action, settings_path).await
         }
         Commands::Mcp(args) => {
             // The tool calls resolve the settings again, in each child.
             settings?;
             snouty::mcp::cmd_mcp(snouty::mcp::Globals {
                 settings: settings_path,
-                profile,
                 verbose,
                 max_concurrent_calls: args.max_concurrent_calls,
             })
@@ -211,13 +180,11 @@ fn suppress_broken_pipe(result: Result<()>) -> Result<()> {
     }
 }
 
-/// `settings_path` and `profile` are the `--settings` and `--profile` flags,
-/// which `settings` resolved.
+/// `settings_path` is the `--settings` flag, which `settings` resolved.
 async fn cmd_launch(
     args: LaunchArgs,
     settings: &Settings,
     settings_path: Option<PathBuf>,
-    profile: Option<String>,
     OutputOptions { json, verbose }: OutputOptions,
 ) -> Result<()> {
     let launcher = match args.webhook {
@@ -338,7 +305,6 @@ async fn cmd_launch(
                     registry: registry.clone(),
                     secret,
                     settings_path,
-                    profile,
                 }),
                 None => log::debug!(
                     "{registry} does not accept the Antithesis credential, so the runtime pushes with its own credentials"

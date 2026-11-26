@@ -13,11 +13,10 @@ use crate::api::{AntithesisApi, ResponseCache};
 use crate::cli::DockerCredentialAction;
 use crate::error::user_error;
 use crate::registry::{self, Registry};
-use crate::settings::UntrustedSettingsFile;
 use crate::stdio;
 
-/// The requested registry is not a tenant registry, or no profile uses it as
-/// its tenant registry.
+/// The requested registry is not a tenant registry, or the settings do not
+/// use it as their tenant registry.
 #[derive(Debug)]
 pub struct CredentialsNotFound;
 
@@ -47,29 +46,17 @@ struct Credential<'a> {
     secret: &'a str,
 }
 
-/// Runs one action of the protocol. `settings_path` and `profile` are the
-/// `--settings` and `--profile` flags: [`registry::select_settings`] tells
-/// from them, and from their environment variables, which settings and which
-/// credential to use.
+/// Runs one action of the protocol. `settings_path` is the `--settings`
+/// flag, which [`registry::select_settings`] reads.
 ///
 /// The protocol reads an error from stdout, so an error prints its message
 /// there before it returns. The caller prints the full report on stderr,
 /// except for [`CredentialsNotFound`]: Docker reads "not found" as an answer.
-pub async fn run(
-    action: DockerCredentialAction,
-    settings_path: Option<PathBuf>,
-    profile: Option<String>,
-) -> Result<()> {
-    let result = cmd_docker_credential(action, settings_path, profile).await;
+pub async fn run(action: DockerCredentialAction, settings_path: Option<PathBuf>) -> Result<()> {
+    let result = cmd_docker_credential(action, settings_path).await;
     if let Err(report) = &result {
-        // Docker shows only this line, so for a project settings file that
-        // the user has not trusted, it also names the fix.
-        let message = match report.downcast_ref::<UntrustedSettingsFile>() {
-            Some(untrusted) => format!("{untrusted}. {}", UntrustedSettingsFile::suggestion()),
-            None => report.to_string(),
-        };
         // The returned error fails the action, so a failed write loses nothing.
-        let _ = writeln!(stdio::stdout(), "{message}");
+        let _ = writeln!(stdio::stdout(), "{report}");
     }
     result
 }
@@ -77,27 +64,23 @@ pub async fn run(
 async fn cmd_docker_credential(
     action: DockerCredentialAction,
     settings_path: Option<PathBuf>,
-    profile: Option<String>,
 ) -> Result<()> {
     match action {
         DockerCredentialAction::Get => {
             let server_url = read_stdin()?;
             let server_url = server_url.trim();
             // A server URL of another registry reads no settings, so a
-            // broken profile does not fail it.
+            // broken settings file does not fail it.
             let registry: Registry = server_url
                 .parse()
                 .map_err(|err| user_error(format!("invalid server URL on stdin: {err}")))?;
             let Some(tenant) = registry.antithesis_tenant() else {
                 return Err(Report::new(CredentialsNotFound));
             };
-            let Some((settings, credential)) =
-                registry::select_settings(settings_path, profile, &tenant)?
+            let Some((settings, credential)) = registry::select_settings(settings_path, &tenant)?
             else {
                 return Err(Report::new(CredentialsNotFound));
             };
-            // The selected credential, not a new lookup: for a named profile,
-            // the lookup of every command can find the default credential.
             let api = AntithesisApi::build(&settings, credential, false, ResponseCache::Default)?;
             let secret = registry::secret(&api).await?;
             let credential = serde_json::to_string(&Credential {

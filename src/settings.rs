@@ -21,12 +21,9 @@ use crate::tag::{Tag, Tagged};
 
 mod choice;
 mod show;
-mod trust;
 pub use choice::{ContainerEngine, UpdateChannel};
 pub use show::cmd_settings_show;
-pub use trust::{SETTINGS_TRUST_VAR_NAME, UntrustedSettingsFile, deny, trust};
 
-pub const ANTITHESIS_PROFILE_ENV_VAR_NAME: &str = "ANTITHESIS_PROFILE";
 pub const SNOUTY_SETTINGS_PATH_VAR_NAME: &str = "SNOUTY_SETTINGS_PATH";
 pub const ANTITHESIS_TENANT_VAR_NAME: &str = "ANTITHESIS_TENANT";
 pub const ANTITHESIS_REGISTRY_VAR_NAME: &str = "ANTITHESIS_REGISTRY";
@@ -37,9 +34,7 @@ pub const ANTITHESIS_HTTPS_PROXY_VAR_NAME: &str = "ANTITHESIS_HTTPS_PROXY";
 pub const CONTAINER_ENGINE_VAR_NAME: &str = "SNOUTY_CONTAINER_ENGINE";
 pub const UPDATE_CHANNEL_VAR_NAME: &str = "SNOUTY_UPDATE_CHANNEL";
 pub const API_CACHE_MAX_FILE_SIZE_VAR_NAME: &str = "SNOUTY_API_CACHE_MAX_FILE_SIZE";
-pub const PROJECT_SETTINGS_FILENAME: &str = ".snouty.toml";
 const GLOBAL_SETTINGS_FILENAME: &str = "settings.toml";
-const PROFILE_KEY: &str = "profile";
 const REGISTRY_KEY: &str = "registry";
 /// An alias for [`REGISTRY_KEY`].
 const REPOSITORY_KEY: &str = "repository";
@@ -88,7 +83,7 @@ pub fn cache_dir() -> Option<PathBuf> {
 /// snouty's resolved settings.
 ///
 /// Everything is resolved eagerly in [`Settings::resolve`]: it reads the
-/// environment, the project settings file (`.snouty.toml`) and the global
+/// environment, the settings file that the user names and the global
 /// `settings.toml` once, resolves each setting through the precedence chain,
 /// and parses it into its type. A settings file that cannot be read or
 /// parsed, or a value that does not parse, is an error there, so nothing
@@ -100,7 +95,6 @@ pub fn cache_dir() -> Option<PathBuf> {
 /// value resolves identically no matter which code path reads it.
 #[cfg_attr(test, derive(Default))]
 pub struct Settings {
-    profile: Option<String>,
     tenant: Option<Tagged<Tenant, SettingSource>>,
     registry: Option<Tagged<Registry, SettingSource>>,
     /// The `base_url` setting. [`Settings::base_url`] falls back to the
@@ -114,24 +108,15 @@ pub struct Settings {
 }
 
 impl Settings {
-    /// Resolve settings from the environment, the project settings file, and the
-    /// global `settings.toml`.
+    /// Resolve settings from the environment, the settings file that the
+    /// user names, and the global `settings.toml`.
     ///
-    /// The project settings file is located by, in descending precedence:
-    /// the `--settings` flag (`project_settings_path`), `SNOUTY_SETTINGS_PATH`,
-    /// then `./.snouty.toml` in the current working directory. The active profile
-    /// is the `--profile` flag if set, otherwise `ANTITHESIS_PROFILE`.
-    ///
-    /// A settings file that exists but cannot be read or parsed is a hard error,
-    /// as is an explicitly-requested file (via flag or env var) that is missing:
-    /// silently ignoring it would resurface later as a confusing "tenant not
-    /// set". A missing *default* `./.snouty.toml` is fine. The default file is
-    /// used only when the user trusts it (see [`trust::verdict`]).
-    pub fn resolve(
-        project_settings_path: Option<PathBuf>,
-        profile: Option<String>,
-    ) -> Result<Self> {
-        SettingsRequest::from_flags(project_settings_path, profile)?.resolve()
+    /// The user names a settings file with the `--settings` flag
+    /// (`settings_path`), else with `SNOUTY_SETTINGS_PATH`. That file must
+    /// exist. A settings file that exists but cannot be read or parsed is an
+    /// error.
+    pub fn resolve(settings_path: Option<PathBuf>) -> Result<Self> {
+        SettingsSources::from_ambient(explicit_settings_path(settings_path)?.as_deref())?.resolve()
     }
 }
 
@@ -139,8 +124,7 @@ impl Settings {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SettingSource {
     Env(&'static str),
-    /// `key`, such as `profile.prod.registry`, in the settings file at
-    /// `path`.
+    /// `key` in the settings file at `path`.
     File {
         path: KnownPath,
         key: String,
@@ -178,79 +162,6 @@ fn parse_setting<T, E: fmt::Display>(
     }
 }
 
-/// The settings file and the profile that the user names, by flag or by
-/// environment variable.
-pub struct SettingsRequest {
-    project_settings_path: Option<PathBuf>,
-    profile: Option<String>,
-}
-
-impl SettingsRequest {
-    /// The `--settings` flag, else `SNOUTY_SETTINGS_PATH`; the `--profile`
-    /// flag, else `ANTITHESIS_PROFILE`.
-    pub fn from_flags(
-        project_settings_path: Option<PathBuf>,
-        profile: Option<String>,
-    ) -> Result<Self> {
-        let project_settings_path = explicit_settings_path(project_settings_path)?;
-        // An empty value means "unset", not "a profile named the empty string".
-        // `env::var` already collapses an empty env var to `None`; the trailing
-        // filter also covers an explicitly-empty `--profile ""` flag.
-        let profile = match profile {
-            Some(flag) => Some(flag),
-            None => env::var(ANTITHESIS_PROFILE_ENV_VAR_NAME)?,
-        }
-        .filter(|profile| !profile.is_empty());
-        Ok(Self {
-            project_settings_path,
-            profile,
-        })
-    }
-
-    /// The profile that the user names.
-    pub fn profile(&self) -> Option<&str> {
-        self.profile.as_deref()
-    }
-
-    /// See [`Settings::resolve`].
-    pub fn resolve(self) -> Result<Settings> {
-        SettingsSources::from_ambient(self.project_settings_path.as_deref())?.resolve(self.profile)
-    }
-
-    /// The settings of the top-level defaults, then of each named profile:
-    /// first the profiles of the project settings file, then the other
-    /// profiles of the global settings file, each file in name order. This
-    /// reads the same files as [`Self::resolve`], in the same order: a value
-    /// in the project file wins over the same value in the global file. An
-    /// environment variable still overrides every profile. The profile that
-    /// the user names is not used.
-    ///
-    /// Only the profiles whose tenant and registry `wanted` accepts are
-    /// resolved. A profile whose tenant or registry fails to resolve is left
-    /// out: a caller that searches the profiles must not fail on a profile it
-    /// does not use. A wanted profile that fails to resolve gives its error.
-    pub fn resolve_every_profile(
-        &self,
-        wanted: impl Fn(Option<&Tenant>, Option<&Registry>) -> bool,
-    ) -> Result<Vec<Result<Settings, UnresolvedProfile>>> {
-        SettingsSources::from_ambient(self.project_settings_path.as_deref())?
-            .resolve_every_profile(wanted)
-    }
-}
-
-/// A profile that failed to resolve: its name (`None` for the top-level
-/// defaults) and its error.
-pub struct UnresolvedProfile {
-    pub profile: Option<String>,
-    pub error: Report,
-}
-
-/// The settings that name the place that a profile pushes to.
-struct Destination {
-    tenant: Option<Tagged<Tenant, SettingSource>>,
-    registry: Option<Tagged<Registry, SettingSource>>,
-}
-
 /// One source of settings.
 enum Layer {
     Env,
@@ -263,33 +174,24 @@ enum Layer {
 struct SettingsSources(Vec<Layer>);
 
 impl SettingsSources {
-    /// The environment variables, then the project file at
-    /// `project_settings_path`, else the optional `./.snouty.toml`, then the
-    /// global settings file.
-    fn from_ambient(project_settings_path: Option<&Path>) -> Result<Self> {
-        // Parse this even without a project file, so a bad value fails in
-        // every directory.
-        let trust_override = trust::TrustOverride::from_env()?;
-        // A named project file must exist and needs no trust; the default
-        // `./.snouty.toml` is optional and needs trust. (Climbing the directory
-        // tree, if ever wanted, would go here.)
-        let project = match project_settings_path {
-            Some(path) => {
-                KnownPath::new(KnownPathKind::Project { explicit: true }, path).load(true)?
-            }
-            None => load_default_project_file(trust_override)?,
+    /// The environment variables, then the settings file at `settings_path`,
+    /// then the global settings file.
+    fn from_ambient(settings_path: Option<&Path>) -> Result<Self> {
+        let named = match settings_path {
+            Some(path) => KnownPath::new(KnownPathKind::Project, path).load(true)?,
+            None => None,
         };
         let global = load_global_file()?;
         // `--settings` can name the global settings file. Then it is the
         // global file only.
-        let project = project.filter(|project| {
+        let named = named.filter(|named| {
             global
                 .as_ref()
-                .is_none_or(|global| *global.path != *project.path)
+                .is_none_or(|global| *global.path != *named.path)
         });
         Ok(Self(
             std::iter::once(Layer::Env)
-                .chain(project.into_iter().chain(global).map(Layer::File))
+                .chain(named.into_iter().chain(global).map(Layer::File))
                 .collect(),
         ))
     }
@@ -309,74 +211,23 @@ impl SettingsSources {
         })
     }
 
-    /// See [`SettingsRequest::resolve_every_profile`].
-    fn resolve_every_profile(
-        &self,
-        wanted: impl Fn(Option<&Tenant>, Option<&Registry>) -> bool,
-    ) -> Result<Vec<Result<Settings, UnresolvedProfile>>> {
-        let mut names: Vec<&String> = Vec::new();
-        for file in self.files() {
-            let profiles = profiles(file)?;
-            for name in profiles.into_iter().flat_map(Table::keys) {
-                if !names.contains(&name) {
-                    names.push(name);
-                }
-            }
-        }
-        Ok(std::iter::once(None)
-            .chain(names.into_iter().map(|name| Some(name.clone())))
-            .filter(|profile| {
-                self.resolve_destination(profile.as_deref())
-                    .is_ok_and(|to| {
-                        wanted(
-                            to.tenant.as_ref().map(Tagged::value),
-                            to.registry.as_ref().map(Tagged::value),
-                        )
-                    })
-            })
-            .map(|profile| {
-                self.resolve(profile.clone())
-                    .map_err(|error| UnresolvedProfile { profile, error })
-            })
-            .collect())
-    }
-
-    /// The tenant and the registry of `profile`.
-    fn resolve_destination(&self, profile: Option<&str>) -> Result<Destination> {
-        // The tenant is a host name even when an explicit base_url means
-        // that no request goes to the tenant's host.
-        let tenant = parse_setting(
-            resolve_value_with(
-                string_value,
-                &["tenant"],
-                &[ANTITHESIS_TENANT_VAR_NAME],
-                profile,
-                self,
-            )?,
-            str::parse,
-        )?;
-        let registry = parse_setting(
-            resolve_value_with(
-                string_value,
-                &[REGISTRY_KEY, REPOSITORY_KEY],
-                &[ANTITHESIS_REGISTRY_VAR_NAME, ANTITHESIS_REPOSITORY_VAR_NAME],
-                profile,
-                self,
-            )?,
-            str::parse,
-        )?;
-        Ok(Destination { tenant, registry })
-    }
-
-    fn resolve(&self, profile: Option<String>) -> Result<Settings> {
-        let name = profile.as_deref();
+    fn resolve(&self) -> Result<Settings> {
         let text = |key: &str, env_var: &'static str| {
-            resolve_value_with(string_value, &[key], &[env_var], name, self)
+            resolve_value_with(string_value, &[key], &[env_var], self)
         };
-        let Destination { tenant, registry } = self.resolve_destination(name)?;
         Ok(Settings {
-            tenant,
-            registry,
+            // The tenant is a host name even when an explicit base_url means
+            // that no request goes to the tenant's host.
+            tenant: parse_setting(text("tenant", ANTITHESIS_TENANT_VAR_NAME)?, str::parse)?,
+            registry: parse_setting(
+                resolve_value_with(
+                    string_value,
+                    &[REGISTRY_KEY, REPOSITORY_KEY],
+                    &[ANTITHESIS_REGISTRY_VAR_NAME, ANTITHESIS_REPOSITORY_VAR_NAME],
+                    self,
+                )?,
+                str::parse,
+            )?,
             base_url: parse_setting(
                 text("base_url", ANTITHESIS_BASE_URL_VAR_NAME)?,
                 parse_base_url,
@@ -398,13 +249,11 @@ impl SettingsSources {
                     integer_value,
                     &["api_cache_max_file_size"],
                     &[API_CACHE_MAX_FILE_SIZE_VAR_NAME],
-                    name,
                     self,
                 )?,
                 parse_byte_size,
             )?,
             files: self.files().map(|file| file.path.clone()).collect(),
-            profile,
         })
     }
 }
@@ -473,27 +322,11 @@ impl Settings {
         &self.files
     }
 
-    /// The features that these settings use and that the next release
-    /// removes: `./.snouty.toml` and a named profile.
-    pub fn removed_features(&self) -> Vec<RemovedFeature> {
-        let project = self
-            .files
-            .iter()
-            .any(|file| file.kind == KnownPathKind::Project { explicit: false })
-            .then_some(RemovedFeature::DefaultProjectFile);
-        let profile = self.profile.is_some().then_some(RemovedFeature::Profile);
-        project.into_iter().chain(profile).collect()
-    }
-
-    pub(crate) fn profile(&self) -> Option<&str> {
-        self.profile.as_deref()
-    }
-
-    /// The settings that the global settings file alone gives for `profile`,
-    /// without the environment variables and the project file: the values
+    /// The settings that the global settings file alone gives, without the
+    /// environment variables and the file that the user names: the values
     /// that `snouty login` writes.
-    pub(crate) fn resolve_global_file(profile: Option<String>) -> Result<Self> {
-        SettingsSources::global_file()?.resolve(profile)
+    pub(crate) fn resolve_global_file() -> Result<Self> {
+        SettingsSources::global_file()?.resolve()
     }
 
     /// Start building a `Settings` from explicit values, with no environment
@@ -520,12 +353,6 @@ pub struct SettingsBuilder(Settings);
 
 #[cfg(test)]
 impl SettingsBuilder {
-    #[must_use]
-    pub fn profile(mut self, value: &str) -> Self {
-        self.0.profile = Some(value.to_string());
-        self
-    }
-
     #[must_use]
     pub fn tenant(mut self, value: Tenant) -> Self {
         self.0.tenant = Some(value.with_tag(SettingSource::Env(ANTITHESIS_TENANT_VAR_NAME)));
@@ -560,44 +387,7 @@ impl SettingsBuilder {
     }
 }
 
-/// A feature that the next release removes.
-#[derive(Debug, PartialEq, Eq)]
-pub enum RemovedFeature {
-    DefaultProjectFile,
-    Profile,
-    Trust,
-    Deny,
-}
-
-impl fmt::Display for RemovedFeature {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::DefaultProjectFile => write!(f, "./{PROJECT_SETTINGS_FILENAME}"),
-            Self::Profile => f.write_str("settings profiles"),
-            Self::Trust => f.write_str("`snouty settings trust`"),
-            Self::Deny => f.write_str("`snouty settings deny`"),
-        }
-    }
-}
-
-/// A warning that the next release removes `features`; `None` when there
-/// are none.
-pub fn removal_warning(features: &[RemovedFeature]) -> Option<String> {
-    let (last, rest) = features.split_last()?;
-    let features = if rest.is_empty() {
-        last.to_string()
-    } else {
-        let rest: Vec<String> = rest.iter().map(ToString::to_string).collect();
-        format!("{} and {last}", rest.join(", "))
-    };
-    Some(format!(
-        "warning: the next snouty release removes support for {features}. If you \
-         rely on this, file an issue at https://github.com/antithesishq/snouty/issues \
-         or contact Antithesis support."
-    ))
-}
-
-/// The project settings file that the user named: the `--settings` flag
+/// The settings file that the user named: the `--settings` flag
 /// (`flag`), otherwise `SNOUTY_SETTINGS_PATH`. An empty `SNOUTY_SETTINGS_PATH`
 /// is unset; it would otherwise name an empty path that must, and cannot, exist.
 fn explicit_settings_path(flag: Option<PathBuf>) -> Result<Option<PathBuf>> {
@@ -608,13 +398,11 @@ fn explicit_settings_path(flag: Option<PathBuf>) -> Result<Option<PathBuf>> {
 }
 
 /// Writes `tenant`, `registry` and, when given, `base_url` into the global
-/// `settings.toml`, in the table of `profile_to_update` or else the top-level
-/// table. Returns what puts the file back as it was.
+/// `settings.toml`. Returns what puts the file back as it was.
 pub(crate) fn update_settings_in_global_file(
     tenant: &str,
     registry: &str,
     base_url: Option<&str>,
-    profile_to_update: Option<&str>,
 ) -> Result<PreviousSettingsFile> {
     let path = global_settings_dir()
         .ok_or_eyre(NO_GLOBAL_SETTINGS_DIR)?
@@ -625,25 +413,13 @@ pub(crate) fn update_settings_in_global_file(
         None => Table::new(),
     };
 
-    if let Some(profile) = profile_to_update {
-        let profiles = contents
-            .entry(PROFILE_KEY)
-            .or_insert_with(|| Value::Table(Table::new()))
-            .as_table_mut()
-            .ok_or_else(|| eyre!(
-                "The settings file at {:?} is malformed: `profile` should be a table of named profiles",
-                &path
-            ))?;
-        update_table(
-            entry_as_table_mut(profiles, profile),
-            tenant,
-            registry,
-            base_url,
-        );
-    } else {
-        update_table(&mut contents, tenant, registry, base_url);
+    contents.insert("tenant".to_owned(), Value::from(tenant));
+    contents.insert(REGISTRY_KEY.to_owned(), Value::from(registry));
+    if let Some(base_url) = base_url {
+        contents.insert("base_url".to_owned(), Value::from(base_url));
     }
-
+    // The file never holds the alias beside `registry`.
+    contents.remove(REPOSITORY_KEY);
     write_global_toml(GLOBAL_SETTINGS_FILENAME, &contents)?;
     Ok(PreviousSettingsFile {
         path,
@@ -703,17 +479,6 @@ pub(crate) fn write_atomically(path: &Path, contents: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn entry_as_table_mut<'a>(table: &'a mut Table, key: &str) -> &'a mut Table {
-    let slot = table
-        .entry(key.to_owned())
-        .or_insert_with(|| Value::Table(Table::new()));
-    if slot.as_table_mut().is_none() {
-        *slot = Value::Table(Table::new());
-    }
-    slot.as_table_mut()
-        .expect("slot was just ensured to hold a table")
-}
-
 pub(crate) fn mkdir(path: &Path, recursive: bool, permissions: u32) -> Result<()> {
     let mut builder = fs::DirBuilder::new();
     #[cfg(unix)]
@@ -723,16 +488,6 @@ pub(crate) fn mkdir(path: &Path, recursive: bool, permissions: u32) -> Result<()
     }
     builder.recursive(recursive).create(path)?;
     Ok(())
-}
-
-fn update_table(target: &mut Table, tenant: &str, registry: &str, base_url: Option<&str>) {
-    target.insert("tenant".to_owned(), Value::from(tenant));
-    target.insert(REGISTRY_KEY.to_owned(), Value::from(registry));
-    if let Some(base_url) = base_url {
-        target.insert("base_url".to_owned(), Value::from(base_url));
-    }
-    // The table never holds the alias beside `registry`.
-    target.remove(REPOSITORY_KEY);
 }
 
 /// The base URL of `tenant` when no `base_url` is set.
@@ -810,48 +565,24 @@ fn load_global_file() -> Result<Option<LoadedFile>> {
     }
 }
 
-/// Load `./.snouty.toml` when it exists and [`trust::verdict`] allows it.
-fn load_default_project_file(
-    trust_override: Option<trust::TrustOverride>,
-) -> Result<Option<LoadedFile>> {
-    let Some(file) = KnownPath::new(
-        KnownPathKind::Project { explicit: false },
-        Path::new(PROJECT_SETTINGS_FILENAME),
-    )
-    .read(false)?
-    else {
-        return Ok(None);
-    };
-    match trust::verdict(&file.path, file.text.as_bytes(), trust_override)? {
-        trust::Verdict::Use => file.load().map(Some),
-        trust::Verdict::Ignore => {
-            debug!("ignoring the denied settings file {}", file.path.display());
-            Ok(None)
-        }
-    }
-}
-
 /// Reads a setting's value out of a settings file: [`string_value`] for
 /// text settings, [`integer_value`] for numeric ones.
 type ValueReader = fn(&Value) -> Result<String, String>;
 
 /// Resolve the text of a setting from `sources` with the precedence:
-/// environment variable, then the active profile in each file, then the
-/// top-level defaults in each file, most specific file first. The first layer
-/// that has the key wins.
+/// environment variable, then each file, most specific file first. The first
+/// layer that has the key wins.
 ///
 /// A setting can have more than one name, such as a name and its alias. Each
 /// layer reads the names in order, so the first name wins over a later one
 /// in the same layer, and a higher layer wins over both.
 ///
-/// A layer that has the key with a value of the wrong type, or a malformed
-/// `profile` section, is an error. Resolution does not skip to a lower layer,
+/// A layer that has the key with a value of the wrong type is an error. Resolution does not skip to a lower layer,
 /// so a typo such as `tenant = 123` is reported.
 fn resolve_value_with(
     read: ValueReader,
     keys: &[&str],
     env_vars: &[&'static str],
-    profile: Option<&str>,
     sources: &SettingsSources,
 ) -> Result<Option<Tagged<String, SettingSource>>> {
     if matches!(sources.0.first(), Some(Layer::Env)) {
@@ -864,82 +595,23 @@ fn resolve_value_with(
         }
     }
 
-    // `key` in `table`: the table of `profile`, or the top-level table when
-    // `profile` is `None`, of the file at `path`.
-    let found = |path: &KnownPath, table: &Table, key: &str, profile: Option<&str>| {
-        let Some(value) = table.get(key) else {
-            return Ok(None);
-        };
-        let source = SettingSource::File {
-            path: path.clone(),
-            key: match profile {
-                Some(profile) => format!("{PROFILE_KEY}.{profile}.{key}"),
-                None => key.to_owned(),
-            },
-        };
-        match read(value) {
-            Ok(value) => Ok(Some(value.with_tag(source))),
-            Err(err) => Err(invalid_setting(&source, err)),
-        }
-    };
-
-    // A named profile is consulted before defaults, project before global.
-    if let Some(profile) = profile {
-        for file in sources.files() {
-            let Some(table) = profile_table(file, profile)? else {
+    for file in sources.files() {
+        for &key in keys {
+            let Some(value) = file.table.get(key) else {
                 continue;
             };
-            for key in keys {
-                if let Some(found) = found(&file.path, table, key, Some(profile))? {
-                    return Ok(Some(found));
-                }
-            }
-        }
-    }
-
-    // Finally fall back to top-level defaults, project before global.
-    for file in sources.files() {
-        for key in keys {
-            if let Some(found) = found(&file.path, &file.table, key, None)? {
-                return Ok(Some(found));
-            }
+            let source = SettingSource::File {
+                path: file.path.clone(),
+                key: key.to_owned(),
+            };
+            return match read(value) {
+                Ok(value) => Ok(Some(value.with_tag(source))),
+                Err(err) => Err(invalid_setting(&source, err)),
+            };
         }
     }
 
     Ok(None)
-}
-
-/// The `profile` table of a settings file. `Ok(None)` when it is absent; an
-/// error when it is present but not a table.
-fn profiles(file: &LoadedFile) -> Result<Option<&Table>> {
-    file.table
-        .get(PROFILE_KEY)
-        .map(|profiles| {
-            profiles.as_table().ok_or_else(|| {
-                user_error(format!(
-                    "{}: `{PROFILE_KEY}` must be a table of profiles",
-                    file.path.display()
-                ))
-                .suggestion(format!("fix or delete {}", file.path.display()))
-            })
-        })
-        .transpose()
-}
-
-/// The `[profile.<profile>]` table of a settings file. `Ok(None)` when the
-/// `profile` section or the named profile is absent; an error when either is
-/// present but not a table.
-fn profile_table<'a>(file: &'a LoadedFile, profile: &str) -> Result<Option<&'a Table>> {
-    let Some(selected) = profiles(file)?.and_then(|profiles| profiles.get(profile)) else {
-        return Ok(None);
-    };
-    selected.as_table().map(Some).ok_or_else(|| {
-        user_error(format!(
-            "{}: profile `{profile}` must be a table",
-            file.path.display()
-        ))
-        .suggestion(format!("fix or delete {}", file.path.display()))
-    })
 }
 
 /// A text setting's value; an error when it is not a TOML string.
@@ -1055,76 +727,41 @@ mod tests {
     }
 
     fn settings_file(contents: &str) -> LoadedFile {
-        loaded_file(
-            KnownPathKind::Project { explicit: true },
-            "/test/settings.toml",
-            contents,
-        )
+        loaded_file(KnownPathKind::Project, "/test/settings.toml", contents)
     }
 
     /// Leaves out the environment, so the files alone decide the result.
-    fn sources(project: Option<LoadedFile>, global: Option<LoadedFile>) -> SettingsSources {
-        SettingsSources(project.into_iter().chain(global).map(Layer::File).collect())
+    fn sources(named: Option<LoadedFile>, global: Option<LoadedFile>) -> SettingsSources {
+        SettingsSources(named.into_iter().chain(global).map(Layer::File).collect())
     }
 
     /// The text of the tenant setting.
-    fn resolve_text(
-        profile: Option<&str>,
-        sources: &SettingsSources,
-    ) -> Result<Option<Tagged<String, SettingSource>>> {
+    fn resolve_text(sources: &SettingsSources) -> Result<Option<Tagged<String, SettingSource>>> {
         resolve_value_with(
             string_value,
             &["tenant"],
             &[ANTITHESIS_TENANT_VAR_NAME],
-            profile,
             sources,
         )
     }
 
     /// Each layer in the precedence tests uses a distinct value, so the
     /// resolved value proves which layer won.
-    fn resolve_tenant(
-        profile: Option<&str>,
-        project: Option<LoadedFile>,
-        global: Option<LoadedFile>,
-    ) -> Option<String> {
-        resolve_text(profile, &sources(project, global))
+    fn resolve_tenant(named: Option<LoadedFile>, global: Option<LoadedFile>) -> Option<String> {
+        resolve_text(&sources(named, global))
             .unwrap()
             .map(Tagged::untag)
     }
 
     // ---- strict TOML typing --------------------------------------------
 
-    /// The error of resolving the tenant from a project file with
-    /// `contents`.
-    fn resolve_error(profile: Option<&str>, contents: &str) -> String {
-        resolve_text(profile, &sources(Some(settings_file(contents)), None))
-            .expect_err("the value should not resolve")
-            .to_string()
-    }
-
-    #[test]
-    fn a_profile_value_is_read_from_its_table() {
-        let file = "[profile.staging]\ntenant = \"staging-tenant\"\n";
-        assert_eq!(
-            resolve_tenant(Some("staging"), Some(settings_file(file)), None).as_deref(),
-            Some("staging-tenant")
-        );
-        assert_eq!(
-            resolve_tenant(Some("prod"), Some(settings_file(file)), None),
-            None
-        );
-    }
-
     #[test]
     fn a_non_string_value_is_an_invalid_setting() {
         assert_eq!(
-            resolve_error(None, "tenant = 123\n"),
+            resolve_text(&sources(Some(settings_file("tenant = 123\n")), None))
+                .expect_err("the value should not resolve")
+                .to_string(),
             "invalid setting `tenant` in /test/settings.toml: must be a string, but found integer"
-        );
-        assert_eq!(
-            resolve_error(Some("p"), "[profile.p]\ntenant = true\n"),
-            "invalid setting `profile.p.tenant` in /test/settings.toml: must be a string, but found boolean"
         );
     }
 
@@ -1135,18 +772,6 @@ mod tests {
         assert_eq!(
             integer_value(&Value::Boolean(true)).unwrap_err(),
             "must be an integer or a string, but found boolean"
-        );
-    }
-
-    #[test]
-    fn a_profile_section_that_is_not_a_table_is_a_fault_in_the_file() {
-        assert_eq!(
-            resolve_error(Some("p"), "profile = \"oops\"\n"),
-            "/test/settings.toml: `profile` must be a table of profiles"
-        );
-        assert_eq!(
-            resolve_error(Some("p"), "[profile]\np = \"oops\"\n"),
-            "/test/settings.toml: profile `p` must be a table"
         );
     }
 
@@ -1176,147 +801,37 @@ mod tests {
     // ---- precedence ----------------------------------------------------
 
     #[test]
-    fn project_profile_beats_global_profile_and_all_defaults() {
-        let project =
-            settings_file("tenant = \"proj-default\"\n[profile.p]\ntenant = \"proj-profile\"\n");
-        let global = settings_file(
-            "tenant = \"global-default\"\n[profile.p]\ntenant = \"global-profile\"\n",
-        );
+    fn the_named_file_beats_the_global_file() {
+        let named = settings_file("tenant = \"named\"\n");
+        let global = settings_file("tenant = \"global\"\n");
         assert_eq!(
-            resolve_tenant(Some("p"), Some(project), Some(global)).as_deref(),
-            Some("proj-profile")
+            resolve_tenant(Some(named), Some(global)).as_deref(),
+            Some("named")
         );
     }
 
     #[test]
-    fn global_profile_beats_project_default() {
-        let project = settings_file("tenant = \"proj-default\"\n");
-        let global = settings_file("[profile.p]\ntenant = \"global-profile\"\n");
+    fn the_global_file_is_the_last_resort() {
+        let global = settings_file("tenant = \"global\"\n");
         assert_eq!(
-            resolve_tenant(Some("p"), Some(project), Some(global)).as_deref(),
-            Some("global-profile")
-        );
-    }
-
-    #[test]
-    fn project_default_beats_global_default() {
-        let project = settings_file("tenant = \"proj-default\"\n");
-        let global = settings_file("tenant = \"global-default\"\n");
-        assert_eq!(
-            resolve_tenant(None, Some(project), Some(global)).as_deref(),
-            Some("proj-default")
-        );
-    }
-
-    #[test]
-    fn global_default_is_the_last_resort() {
-        let global = settings_file("tenant = \"global-default\"\n");
-        assert_eq!(
-            resolve_tenant(None, None, Some(global)).as_deref(),
-            Some("global-default")
+            resolve_tenant(None, Some(global)).as_deref(),
+            Some("global")
         );
     }
 
     #[test]
     fn nothing_set_resolves_to_none() {
-        assert!(resolve_tenant(None, None, None).is_none());
-    }
-
-    #[test]
-    fn an_unselected_profile_falls_back_to_defaults() {
-        // No `--profile`, so a `[profile.p]` value is ignored in favor of the
-        // top-level default.
-        let project =
-            settings_file("tenant = \"proj-default\"\n[profile.p]\ntenant = \"proj-profile\"\n");
-        assert_eq!(
-            resolve_tenant(None, Some(project), None).as_deref(),
-            Some("proj-default")
-        );
-    }
-
-    // ---- removal_warning -----------------------------------------------
-
-    #[test]
-    fn removal_warning_lists_each_feature() {
-        let features = |features: &[RemovedFeature]| {
-            removal_warning(features).map(|warning| {
-                warning
-                    .strip_prefix("warning: the next snouty release removes support for ")
-                    .and_then(|rest| rest.split_once(". ").map(|(list, _)| list.to_owned()))
-                    .unwrap()
-            })
-        };
-        assert_eq!(features(&[]), None);
-        assert_eq!(
-            features(&[RemovedFeature::Trust]).as_deref(),
-            Some("`snouty settings trust`")
-        );
-        assert_eq!(
-            features(&[RemovedFeature::DefaultProjectFile, RemovedFeature::Profile]).as_deref(),
-            Some("./.snouty.toml and settings profiles")
-        );
-        assert_eq!(
-            features(&[
-                RemovedFeature::DefaultProjectFile,
-                RemovedFeature::Profile,
-                RemovedFeature::Deny
-            ])
-            .as_deref(),
-            Some("./.snouty.toml, settings profiles and `snouty settings deny`")
-        );
-    }
-
-    // ---- resolve_every_profile -----------------------------------------
-
-    /// The profiles that `resolve_every_profile` gives, in order, with
-    /// `defaults` for the top-level defaults and `error` for a profile that
-    /// fails to resolve. `wanted` accepts the profiles of the tenant `acme`,
-    /// or every profile when `acme_only` is false.
-    fn every_profile(project: &str, global: &str, acme_only: bool) -> Vec<String> {
-        sources(Some(settings_file(project)), Some(settings_file(global)))
-            .resolve_every_profile(|tenant, _| !acme_only || tenant.is_some_and(|t| **t == *"acme"))
-            .unwrap()
-            .iter()
-            .map(|settings| match settings {
-                Ok(settings) => settings.profile().unwrap_or("defaults").to_owned(),
-                Err(_) => "error".to_owned(),
-            })
-            .collect()
-    }
-
-    #[test]
-    fn every_profile_is_the_defaults_then_the_project_then_the_global_profiles() {
-        let project = "[profile.zulu]\n[profile.mike]\n";
-        let global = "[profile.alpha]\n[profile.zulu]\n[profile.kilo]\n";
-        assert_eq!(
-            every_profile(project, global, false),
-            ["defaults", "mike", "zulu", "alpha", "kilo"]
-        );
-    }
-
-    #[test]
-    fn every_profile_skips_a_profile_whose_tenant_fails_to_resolve() {
-        let project = "[profile.a]\n[profile.broken]\ntenant = \"a/b\"\n[profile.c]\n";
-        assert_eq!(every_profile(project, "", false), ["defaults", "a", "c"]);
-    }
-
-    /// A bad value that the search does not read hides no profile: the
-    /// wanted profile gives its error, and another profile is left out.
-    #[test]
-    fn a_wanted_profile_that_fails_to_resolve_gives_its_error() {
-        let project = "[profile.acme]\ntenant = \"acme\"\ncontainer_engine = \"none\"\n\
-                       [profile.other]\ntenant = \"other\"\ncontainer_engine = \"none\"\n";
-        assert_eq!(every_profile(project, "", true), ["error"]);
+        assert!(resolve_tenant(None, None).is_none());
     }
 
     #[test]
     fn the_registry_source_names_the_file_and_the_key() {
-        let source = |project: &str, profile: Option<&str>| {
+        let source = |named: &str| {
             sources(
                 Some(loaded_file(
-                    KnownPathKind::Project { explicit: true },
-                    "/work/.snouty.toml",
-                    project,
+                    KnownPathKind::Project,
+                    "/work/settings.toml",
+                    named,
                 )),
                 Some(loaded_file(
                     KnownPathKind::Global,
@@ -1324,13 +839,13 @@ mod tests {
                     "registry = \"global.example.com\"\n",
                 )),
             )
-            .resolve(profile.map(str::to_owned))
+            .resolve()
             .unwrap()
             .registry()
             .map(|registry| registry.tag().clone())
         };
         assert_eq!(
-            source("", None),
+            source(""),
             Some(SettingSource::File {
                 path: KnownPath {
                     kind: KnownPathKind::Global,
@@ -1340,16 +855,13 @@ mod tests {
             })
         );
         assert_eq!(
-            source(
-                "[profile.p]\nregistry = \"project.example.com\"\n",
-                Some("p")
-            ),
+            source("repository = \"named.example.com\"\n"),
             Some(SettingSource::File {
                 path: KnownPath {
-                    kind: KnownPathKind::Project { explicit: true },
-                    path: PathBuf::from("/work/.snouty.toml"),
+                    kind: KnownPathKind::Project,
+                    path: PathBuf::from("/work/settings.toml"),
                 },
-                key: "profile.p.registry".to_owned(),
+                key: "repository".to_owned(),
             })
         );
     }
@@ -1394,7 +906,7 @@ mod tests {
 
     /// The settings that a project file with `contents` gives.
     fn resolve_file(contents: &str) -> Result<Settings> {
-        sources(Some(settings_file(contents)), None).resolve(None)
+        sources(Some(settings_file(contents)), None).resolve()
     }
 
     #[test]

@@ -361,7 +361,6 @@ mod tests {
         ];
         let globals = Globals {
             settings: None,
-            profile: None,
             verbose: false,
             max_concurrent_calls: NonZeroUsize::new(1).unwrap(),
         };

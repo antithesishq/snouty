@@ -1,10 +1,7 @@
 //! The credentials that `snouty login` stores: in the system keychain, or
 //! else in the credentials file.
 
-use std::{
-    collections::HashMap,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
 use color_eyre::{
     Section,
@@ -22,34 +19,22 @@ use crate::{
 };
 
 const CREDENTIALS_FILENAME: &str = "credentials.toml";
+/// The name of snouty's entry in the system keychain.
+pub(crate) const KEYCHAIN_ENTRY_NAME: &str = "_default_";
 
-/// A place that `snouty login` stores the credential of one profile. An
-/// OAuth refresh writes the new token back to the same place.
+/// A place that `snouty login` stores the credential. An OAuth refresh writes
+/// the new token back to the same place.
 #[derive(Clone, Debug)]
 pub(crate) enum CredentialStore {
-    Keychain {
-        profile: Option<String>,
-    },
-    CredentialsFile {
-        path: PathBuf,
-        profile: Option<String>,
-    },
+    Keychain,
+    CredentialsFile { path: PathBuf },
 }
 
 impl CredentialStore {
-    /// The named profile, or `None` for the default profile.
-    pub(crate) fn profile(&self) -> Option<&str> {
-        match self {
-            Self::Keychain { profile } | Self::CredentialsFile { profile, .. } => {
-                profile.as_deref()
-            }
-        }
-    }
-
     pub(super) fn load(&self) -> Result<Option<PersistableCredentials>> {
         match self {
-            Self::Keychain { profile } => {
-                let Some(entry) = keychain_entry(profile.as_deref())? else {
+            Self::Keychain => {
+                let Some(entry) = keychain_entry()? else {
                     return Ok(None);
                 };
                 match entry.get_password() {
@@ -64,33 +49,27 @@ impl CredentialStore {
                     },
                     Err(keyring_core::Error::NoEntry) => Ok(None),
                     Err(err) => {
-                        warn!(
-                            "keychain lookup for entry {} failed: {err}",
-                            keychain_entry_name(profile.as_deref())
-                        );
+                        warn!("keychain lookup for entry {KEYCHAIN_ENTRY_NAME} failed: {err}");
                         Ok(None)
                     }
                 }
             }
-            Self::CredentialsFile { path, profile } => {
+            Self::CredentialsFile { path } => {
                 let Some(contents) = read_to_string_if_file_exists(path)? else {
                     return Ok(None);
                 };
-                let parsed = parse_credentials_file_toml(&contents, path)?;
-                Ok(parsed.for_profile(profile.as_deref()))
+                Ok(parse_credentials_file_toml(&contents, path)?.default)
             }
         }
     }
 
     pub(super) fn persist(&self, credentials: PersistableCredentials) -> Result<()> {
         match self {
-            Self::Keychain { profile } => keychain_entry(profile.as_deref())?
+            Self::Keychain => keychain_entry()?
                 .ok_or_eyre("the system keychain is not available")?
                 .set_password(&serde_json::to_string(&credentials)?)
                 .wrap_err("writing the credential to the keychain"),
-            Self::CredentialsFile { path, profile } => {
-                persist_to_file(credentials, profile.as_deref(), path)
-            }
+            Self::CredentialsFile { path } => persist_to_file(credentials, path),
         }
     }
 
@@ -100,19 +79,10 @@ impl CredentialStore {
             .map(|found| found.convert_to_authentication_info(&self).with_tag(self)))
     }
 
-    pub(super) fn keychain(profile: Option<&str>) -> Self {
-        Self::Keychain {
-            profile: profile.map(str::to_owned),
-        }
-    }
-
-    /// The credentials file for `profile`, or `None` when the global settings
-    /// dir is unknown.
-    pub(super) fn credentials_file(profile: Option<&str>) -> Option<Self> {
-        credentials_file_path().map(|path| Self::CredentialsFile {
-            path,
-            profile: profile.map(str::to_owned),
-        })
+    /// The credentials file, or `None` when the global settings dir is
+    /// unknown.
+    pub(super) fn credentials_file() -> Option<Self> {
+        credentials_file_path().map(|path| Self::CredentialsFile { path })
     }
 }
 
@@ -222,27 +192,24 @@ pub fn initialize_credential_store() -> Result<()> {
 
 /// Stores `credentials` in the keychain, or in the credentials file when there
 /// is no keychain.
-pub(crate) fn persist(
-    credentials: PersistableCredentials,
-    profile: Option<&str>,
-) -> Result<CredentialStore> {
-    let store = if keychain_entry(profile)?.is_some() {
-        CredentialStore::keychain(profile)
+pub(crate) fn persist(credentials: PersistableCredentials) -> Result<CredentialStore> {
+    let store = if keychain_entry()?.is_some() {
+        CredentialStore::Keychain
     } else {
-        CredentialStore::credentials_file(profile).ok_or_eyre(
+        CredentialStore::credentials_file().ok_or_eyre(
             "Could not determine settings directory. Please ensure $XDG_CONFIG_HOME or $HOME is set",
         )?
     };
     store.persist(credentials)?;
-    if matches!(store, CredentialStore::Keychain { .. }) {
-        clear_from_file_if_present(profile);
+    if matches!(store, CredentialStore::Keychain) {
+        clear_from_file_if_present();
     }
     Ok(store)
 }
 
-/// The keychain entry of `profile`, or `None` when there is no keychain.
-fn keychain_entry(profile: Option<&str>) -> Result<Option<Entry>> {
-    match Entry::new("snouty", &keychain_entry_name(profile)) {
+/// snouty's keychain entry, or `None` when there is no keychain.
+fn keychain_entry() -> Result<Option<Entry>> {
+    match Entry::new("snouty", KEYCHAIN_ENTRY_NAME) {
         Ok(entry) => Ok(Some(entry)),
         // No default store: `initialize_credential_store` is a no-op on this
         // platform.
@@ -251,98 +218,52 @@ fn keychain_entry(profile: Option<&str>) -> Result<Option<Entry>> {
     }
 }
 
-pub(crate) fn keychain_entry_name(profile: Option<&str>) -> String {
-    profile.map_or_else(|| "_default_".to_owned(), |p| format!("profile_{p}"))
-}
-
-fn clear_from_file_if_present(profile: Option<&str>) {
+/// Deletes the credentials file when it holds a credential, which the one
+/// in the keychain replaces.
+fn clear_from_file_if_present() {
     let Some(path) = credentials_file_path() else {
         return;
     };
     if let Ok(Some(contents)) = read_to_string_if_file_exists(&path)
-        && let Ok(mut creds_file) = parse_credentials_file_toml(&contents, &path)
+        && let Ok(creds_file) = parse_credentials_file_toml(&contents, &path)
+        && creds_file.default.is_some()
     {
-        let mut changed = false;
-        if let Some(profile) = profile {
-            if let Some(by_profile) = creds_file.profile.as_mut() {
-                changed = by_profile.remove(profile).is_some();
-            }
-        } else {
-            changed = creds_file.default.is_some();
-            creds_file.default = None;
-        }
-
-        if changed {
-            let profile_phrase = if profile.is_some() { "the same" } else { "no" };
-            match rewrite_credentials_file(&creds_file, &path) {
-                Ok(()) => warn!(
-                    "The supplied credentials were stored in the keychain, but an entry under {profile_phrase} profile name was also present in the user credentials file. Cleared the entry from the credentials file in favor of what was committed to the keychain."
-                ),
-                Err(err) => warn!(
-                    "The supplied credentials were stored in the keychain, but a stale entry under {profile_phrase} profile name could not be removed from the credentials file at {}: {err:#}. The plaintext entry remains on disk.",
-                    path.display()
-                ),
-            }
+        match std::fs::remove_file(&path) {
+            Ok(()) => warn!(
+                "The supplied credentials were stored in the keychain, but the user credentials file also held a credential. Deleted the credentials file in favor of what was committed to the keychain."
+            ),
+            Err(err) => warn!(
+                "The supplied credentials were stored in the keychain, but the stale credentials file at {} could not be deleted: {err:#}. The plaintext credential remains on disk.",
+                path.display()
+            ),
         }
     }
 }
 
-fn rewrite_credentials_file(creds_file: &CredentialsFile, path: &Path) -> Result<()> {
-    write_atomically(path, toml::to_string_pretty(creds_file)?.as_bytes())
-}
-
-fn persist_to_file(
-    credentials: PersistableCredentials,
-    profile: Option<&str>,
-    path: &Path,
-) -> Result<()> {
+fn persist_to_file(credentials: PersistableCredentials, path: &Path) -> Result<()> {
     let settings_dir = path
         .parent()
         .ok_or_else(|| eyre!("Unable to determine parent directory of {}", path.display()))?;
 
     mkdir(settings_dir, true, 0o700)?;
 
-    let mut current_contents = match read_to_string_if_file_exists(path)? {
-        Some(contents) => {
-            if let Ok(file) = parse_credentials_file_toml(&contents, path) {
-                file
-            } else {
-                let backup = back_up_unparsable_file(path)?;
-                // Same shape as the settings repair note: paths on their own
-                // lines, since they are what the user may copy and what made
-                // the one-line form overflow.
-                eprintln!(
-                    "warning: the existing credentials file could not be parsed; a new one will be written.\n  kept as a backup: {}\n  will be rewritten: {}",
-                    backup.display(),
-                    path.display(),
-                );
-                CredentialsFile {
-                    default: None,
-                    profile: None,
-                }
-            }
-        }
-        None => CredentialsFile {
-            default: None,
-            profile: None,
-        },
-    };
-
-    if let Some(profile) = profile {
-        if current_contents.profile.is_none() {
-            current_contents.profile = Some(HashMap::new());
-        }
-
-        current_contents
-            .profile
-            .as_mut()
-            .unwrap()
-            .insert(profile.to_owned(), credentials);
-    } else {
-        current_contents.default = Some(credentials);
+    if let Some(contents) = read_to_string_if_file_exists(path)?
+        && parse_credentials_file_toml(&contents, path).is_err()
+    {
+        let backup = back_up_unparsable_file(path)?;
+        // Same shape as the settings repair note: paths on their own
+        // lines, since they are what the user may copy and what made
+        // the one-line form overflow.
+        eprintln!(
+            "warning: the existing credentials file could not be parsed; a new one will be written.\n  kept as a backup: {}\n  will be rewritten: {}",
+            backup.display(),
+            path.display(),
+        );
     }
-
-    rewrite_credentials_file(&current_contents, path)
+    let file = CredentialsFile {
+        default: Some(credentials),
+    };
+    write_atomically(path, toml::to_string_pretty(&file)?.as_bytes())
 }
 
 pub(super) fn parse_credentials_file_toml(contents: &str, path: &Path) -> Result<CredentialsFile> {
@@ -361,23 +282,11 @@ pub(super) fn parse_credentials_file_toml(contents: &str, path: &Path) -> Result
         })
 }
 
+/// The credentials file. It keeps the credential in a `[default]` table, the
+/// layout of earlier releases.
 #[derive(Serialize, Deserialize)]
 pub(super) struct CredentialsFile {
     default: Option<PersistableCredentials>,
-    profile: Option<HashMap<String, PersistableCredentials>>,
-}
-
-impl CredentialsFile {
-    /// A named profile reads its own `[profile.<name>]` section, and never
-    /// falls back to `[default]`.
-    pub(super) fn for_profile(self, profile: Option<&str>) -> Option<PersistableCredentials> {
-        match profile {
-            Some(name) => self
-                .profile
-                .and_then(|by_profile| by_profile.get(name).cloned()),
-            None => self.default,
-        }
-    }
 }
 
 #[cfg(test)]

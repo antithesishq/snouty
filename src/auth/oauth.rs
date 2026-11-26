@@ -17,8 +17,8 @@ use sha2::{Digest, Sha256};
 
 use super::{
     claims::try_get_expiry_from_token,
-    login_command, refuses_renewal,
-    store::{CredentialStore, PersistableCredentials, keychain_entry_name},
+    refuses_renewal,
+    store::{CredentialStore, KEYCHAIN_ENTRY_NAME, PersistableCredentials},
     to_header_value,
 };
 use crate::settings::{global_settings_dir, mkdir};
@@ -130,11 +130,10 @@ impl RefreshableOAuthToken {
             return Ok(());
         }
         let Some(refresh_token) = current.refresh_token else {
-            return Err(RenewalError::refused(self.store.profile()).report(None));
+            return Err(RenewalError::Refused.report(None));
         };
 
-        let refreshed =
-            refresh_oauth_token(client, base_url, &refresh_token, self.store.profile()).await?;
+        let refreshed = refresh_oauth_token(client, base_url, &refresh_token).await?;
         let refreshed = OAuthCredential {
             antithesis_token: refreshed.antithesis_token,
             // Per RFC 6749 §6, a refresh response without a new refresh token
@@ -162,14 +161,16 @@ struct OAuthRefreshResponse {
 impl CredentialStore {
     /// The advisory lock file that serializes refreshes of this store.
     fn lock_path(&self) -> Option<PathBuf> {
-        let scope = keychain_entry_name(self.profile());
+        // The keychain entry's name keeps the lock names of earlier releases,
+        // so that an older snouty process and this one share a lock.
+        let scope = KEYCHAIN_ENTRY_NAME;
         match self {
-            Self::CredentialsFile { path, .. } => Some(
+            Self::CredentialsFile { path } => Some(
                 path.parent()?
                     .join("locks")
                     .join(format!("{}.{scope}.refresh.lock", path_lock_token(path))),
             ),
-            Self::Keychain { .. } => Some(lock_dir()?.join(format!("{scope}.refresh.lock"))),
+            Self::Keychain => Some(lock_dir()?.join(format!("{scope}.refresh.lock"))),
         }
     }
 }
@@ -202,7 +203,7 @@ async fn acquire_refresh_lock(store: &CredentialStore) -> Option<std::fs::File> 
     .flatten()
 }
 
-/// Why the tenant did not renew the OAuth sign-in of `profile`. The message
+/// Why the tenant did not renew the OAuth sign-in. The message
 /// also names the next step, because an API request keeps only the message
 /// of its error.
 #[derive(Debug, thiserror::Error)]
@@ -210,32 +211,20 @@ pub(crate) enum RenewalError {
     /// The sign-in needs a new login: the tenant answered a 4xx other than
     /// 408 and 429, or there is no refresh token.
     #[error("{}; {}", self.summary(), self.next_step())]
-    Refused { profile: Option<String> },
+    Refused,
     /// A later try can succeed: the tenant answered a 5xx, a 408 or a 429,
     /// did not answer, or sent an answer that snouty cannot read.
     #[error("{}; {}", self.summary(), self.next_step())]
-    Temporary { profile: Option<String> },
+    Temporary,
 }
 
 impl RenewalError {
-    fn refused(profile: Option<&str>) -> Self {
-        Self::Refused {
-            profile: profile.map(str::to_owned),
-        }
-    }
-
-    fn temporary(profile: Option<&str>) -> Self {
-        Self::Temporary {
-            profile: profile.map(str::to_owned),
-        }
-    }
-
     /// The error for a refresh request that failed with `err`.
-    fn of_request(err: &reqwest::Error, profile: Option<&str>) -> Self {
+    fn of_request(err: &reqwest::Error) -> Self {
         if err.status().is_some_and(refuses_renewal) {
-            Self::refused(profile)
+            Self::Refused
         } else {
-            Self::temporary(profile)
+            Self::Temporary
         }
     }
 
@@ -252,20 +241,15 @@ impl RenewalError {
     /// The message without the next step.
     pub(crate) fn summary(&self) -> &'static str {
         match self {
-            Self::Refused { .. } => "the sign-in expired and could not be renewed",
-            Self::Temporary { .. } => "the tenant could not renew the sign-in",
+            Self::Refused => "the sign-in expired and could not be renewed",
+            Self::Temporary => "the tenant could not renew the sign-in",
         }
     }
 
-    pub(crate) fn next_step(&self) -> String {
+    pub(crate) fn next_step(&self) -> &'static str {
         match self {
-            Self::Refused { profile } => {
-                format!("run {} to sign in again", login_command(profile.as_deref()))
-            }
-            Self::Temporary { profile } => format!(
-                "try again later, or run {} to sign in again",
-                login_command(profile.as_deref())
-            ),
+            Self::Refused => "run `snouty login` to sign in again",
+            Self::Temporary => "try again later, or run `snouty login` to sign in again",
         }
     }
 }
@@ -274,7 +258,6 @@ async fn refresh_oauth_token(
     client: &reqwest::Client,
     base_url: &str,
     refresh_token: &str,
-    profile: Option<&str>,
 ) -> Result<OAuthRefreshResponse> {
     let mut request = reqwest::Request::new(
         reqwest::Method::POST,
@@ -284,14 +267,14 @@ async fn refresh_oauth_token(
     // Only a damaged credentials file holds a refresh token that is not a
     // header value, and a new sign-in replaces it.
     let header = to_header_value(&format!("Bearer {refresh_token}"), true)
-        .map_err(|e| RenewalError::refused(profile).report(Some(e)))?;
+        .map_err(|e| RenewalError::Refused.report(Some(e)))?;
     request
         .headers_mut()
         .insert(reqwest::header::AUTHORIZATION, header);
     request.timeout_mut().replace(Duration::from_secs(30));
 
     let renewal_error =
-        |err: reqwest::Error| RenewalError::of_request(&err, profile).report(Some(err.into()));
+        |err: reqwest::Error| RenewalError::of_request(&err).report(Some(err.into()));
     client
         .execute(request)
         .await
@@ -391,10 +374,9 @@ mod tests {
         );
     }
 
-    /// Refreshes a token of `profile` against a tenant that answers
-    /// `response`, or that does not answer when `response` is `None`, and
-    /// returns the error.
-    async fn refresh_error(profile: Option<&str>, response: Option<ResponseTemplate>) -> Report {
+    /// Refreshes a token against a tenant that answers `response`, or that
+    /// does not answer when `response` is `None`, and returns the error.
+    async fn refresh_error(response: Option<ResponseTemplate>) -> Report {
         use wiremock::matchers::{method, path};
         use wiremock::{Mock, MockServer};
 
@@ -417,7 +399,6 @@ mod tests {
         let creds_dir = tempfile::TempDir::new().unwrap();
         let store = CredentialStore::CredentialsFile {
             path: creds_dir.path().join("credentials.toml"),
-            profile: profile.map(str::to_owned),
         };
         let token = RefreshableOAuthToken::new(
             store,
@@ -431,27 +412,20 @@ mod tests {
     #[tokio::test]
     async fn a_refused_refresh_says_to_sign_in_again() {
         for status in [401, 403] {
-            let err = refresh_error(None, Some(ResponseTemplate::new(status))).await;
+            let err = refresh_error(Some(ResponseTemplate::new(status))).await;
             assert_eq!(
                 err.to_string(),
                 "the sign-in expired and could not be renewed; \
                  run `snouty login` to sign in again"
             );
         }
-        let err = refresh_error(Some("staging"), Some(ResponseTemplate::new(401))).await;
-        assert_eq!(
-            err.to_string(),
-            "the sign-in expired and could not be renewed; \
-             run `snouty login --profile staging` to sign in again"
-        );
     }
 
     #[tokio::test]
-    async fn a_sign_in_without_a_refresh_token_says_to_sign_in_to_its_profile() {
+    async fn a_sign_in_without_a_refresh_token_says_to_sign_in_again() {
         let creds_dir = tempfile::TempDir::new().unwrap();
         let store = CredentialStore::CredentialsFile {
             path: creds_dir.path().join("credentials.toml"),
-            profile: Some("staging".to_owned()),
         };
         let token = RefreshableOAuthToken::new(store, FAKE_ACCESS_TOKEN_A.to_owned(), None);
         let client = crate::testutils::test_client();
@@ -462,7 +436,7 @@ mod tests {
         assert_eq!(
             err.to_string(),
             "the sign-in expired and could not be renewed; \
-             run `snouty login --profile staging` to sign in again"
+             run `snouty login` to sign in again"
         );
     }
 
@@ -474,7 +448,7 @@ mod tests {
             .into_iter()
             .chain([Some(unreadable), None]);
         for response in responses {
-            let err = refresh_error(None, response).await;
+            let err = refresh_error(response).await;
             assert_eq!(
                 err.to_string(),
                 "the tenant could not renew the sign-in; \
@@ -571,7 +545,7 @@ mod tests {
 
     #[test]
     fn expired_is_true_when_the_oauth_access_token_is_past_its_exp() {
-        let store = CredentialStore::Keychain { profile: None };
+        let store = CredentialStore::Keychain;
         let oauth = |token: String| {
             RefreshableOAuthToken::new(store.clone(), token, Some(FAKE_REFRESH_TOKEN_A.to_owned()))
         };
@@ -583,7 +557,7 @@ mod tests {
 
     #[test]
     fn expires_at_is_the_exp_of_an_oauth_access_token() {
-        let store = CredentialStore::Keychain { profile: None };
+        let store = CredentialStore::Keychain;
         let token = public_paseto_with_claims(br#"{"exp":"2039-01-01T00:00:00+00:00"}"#);
         let oauth = RefreshableOAuthToken::new(store.clone(), token, None);
         assert_eq!(

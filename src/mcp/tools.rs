@@ -601,7 +601,7 @@ mod tests {
         for name in ToolName::ALL {
             let tool = &name.spec().tool;
             let properties = tool.input_schema["properties"].as_object().unwrap();
-            for global in ["verbose", "settings", "profile", "help", "detail"] {
+            for global in ["verbose", "settings", "help", "detail"] {
                 assert!(!properties.contains_key(global), "{name}: {global}");
             }
             assert_eq!(

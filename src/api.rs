@@ -849,8 +849,8 @@ impl AntithesisApi {
     /// The client for the credential that every command finds. A rejection
     /// of it names the step that fixes it at its source.
     fn ambient(settings: &Settings, verbose: bool, policy: PasswordPolicy) -> Result<Self> {
-        let credential = AuthenticationInfo::for_ambient_configuration(settings.profile(), policy)?;
-        let next_step = rejected_credential_next_step(&credential, settings.profile());
+        let credential = AuthenticationInfo::for_ambient_configuration(policy)?;
+        let next_step = rejected_credential_next_step(&credential);
         Ok(Self {
             rejected_next_step: Some(next_step),
             ..Self::build(

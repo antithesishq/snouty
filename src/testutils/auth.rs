@@ -40,11 +40,10 @@ pub(crate) fn jwt_expiring_in(lifetime: SignedDuration) -> String {
     jwt_with_claims(serde_json::json!({ "exp": exp }).to_string().as_bytes())
 }
 
-/// The store `credentials.toml` in `dir`, for the default profile.
+/// The store `credentials.toml` in `dir`.
 pub(crate) fn credentials_file_in(dir: &Path) -> CredentialStore {
     CredentialStore::CredentialsFile {
         path: dir.join("credentials.toml"),
-        profile: None,
     }
 }
 

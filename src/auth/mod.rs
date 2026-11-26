@@ -35,7 +35,7 @@ pub(crate) use password::{
 };
 pub use store::initialize_credential_store;
 pub(crate) use store::{
-    CredentialStore, PersistableCredentials, credentials_file_path, keychain_entry_name, persist,
+    CredentialStore, KEYCHAIN_ENTRY_NAME, PersistableCredentials, credentials_file_path, persist,
 };
 
 /// Every environment variable that ambient credential resolution reads. A test
@@ -144,51 +144,25 @@ pub(crate) type SourcedCredential = Tagged<AuthenticationInfo, CredentialSource>
 /// A place snouty looks for credentials. More than one can hold a credential
 /// at once, and the first in resolution order then wins.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum CredentialLookup<'a> {
+enum CredentialLookup {
     Environment,
-    Keychain { profile: Option<&'a str> },
-    CredentialsFile { profile: Option<&'a str> },
+    Keychain,
+    CredentialsFile,
     GithubActionsOidc,
 }
 
-/// Whether the lookup for a named profile reads the stored credential of the
-/// default profile after its own.
-#[derive(Clone, Copy)]
-enum Fallback {
-    DefaultProfile,
-    None,
-}
-
-impl<'a> CredentialLookup<'a> {
-    fn in_resolution_order(
-        profile: Option<&'a str>,
-        fallback: Fallback,
-    ) -> impl Iterator<Item = Self> {
-        let default_entries = (profile.is_none() || matches!(fallback, Fallback::DefaultProfile))
-            .then_some([
-                Self::Keychain { profile: None },
-                Self::CredentialsFile { profile: None },
-            ]);
-        [Self::Environment]
-            .into_iter()
-            .chain(profile.into_iter().flat_map(|profile| {
-                [
-                    Self::Keychain {
-                        profile: Some(profile),
-                    },
-                    Self::CredentialsFile {
-                        profile: Some(profile),
-                    },
-                ]
-            }))
-            .chain(default_entries.into_iter().flatten())
-            .chain([Self::GithubActionsOidc])
-    }
+impl CredentialLookup {
+    const RESOLUTION_ORDER: [Self; 4] = [
+        Self::Environment,
+        Self::Keychain,
+        Self::CredentialsFile,
+        Self::GithubActionsOidc,
+    ];
 
     fn resolve(self) -> Result<Option<SourcedCredential>> {
         match self {
             Self::Environment => AuthenticationInfo::try_from_env(),
-            Self::Keychain { .. } | Self::CredentialsFile { .. } => Ok(self
+            Self::Keychain | Self::CredentialsFile => Ok(self
                 .resolve_stored()?
                 .map(|found| found.map_tag(CredentialSource::Stored))),
             Self::GithubActionsOidc => AuthenticationInfo::try_from_github_actions_environment(),
@@ -198,8 +172,8 @@ impl<'a> CredentialLookup<'a> {
     /// The credential in the store that this place names, if it is one.
     fn resolve_stored(self) -> Result<Option<Tagged<AuthenticationInfo, CredentialStore>>> {
         let store = match self {
-            Self::Keychain { profile } => Some(CredentialStore::keychain(profile)),
-            Self::CredentialsFile { profile } => CredentialStore::credentials_file(profile),
+            Self::Keychain => Some(CredentialStore::Keychain),
+            Self::CredentialsFile => CredentialStore::credentials_file(),
             Self::Environment | Self::GithubActionsOidc => None,
         };
         store.map_or(Ok(None), CredentialStore::resolve)
@@ -237,20 +211,11 @@ impl AuthenticationInfo {
         Ok(None)
     }
 
-    /// The credential of `profile` itself: the environment, then the
-    /// keychain entry and the credentials-file entry of `profile`, then the
-    /// GitHub Actions OIDC environment. Unlike the lookup of every command,
-    /// a named profile does not use the stored credential of the default
-    /// profile. The environment applies to every profile. It makes no network
-    /// call, and `policy` applies to a username and password.
-    pub(crate) fn find_own(profile: Option<&str>, policy: PasswordPolicy) -> Result<Option<Self>> {
-        Self::find(profile, Fallback::None)?
-            .map(|found| Ok(apply_password_policy(found, policy, profile)?.untag()))
-            .transpose()
-    }
-
-    fn find(profile: Option<&str>, fallback: Fallback) -> Result<Option<SourcedCredential>> {
-        for lookup in CredentialLookup::in_resolution_order(profile, fallback) {
+    /// The credential that every command finds, with where it comes from, or
+    /// `None` when there is none. The [`PasswordPolicy`] gate does not run,
+    /// so the caller decides what a username and password means.
+    pub(crate) fn find_ambient() -> Result<Option<SourcedCredential>> {
+        for lookup in CredentialLookup::RESOLUTION_ORDER {
             if let Some(found) = lookup.resolve()? {
                 return Ok(Some(found));
             }
@@ -264,11 +229,9 @@ impl AuthenticationInfo {
     /// This always opens the system keychain, and the [`PasswordPolicy`] gate
     /// does not run. Only a command that reports on the credentials may call
     /// it, and only one that never authenticates with the result.
-    pub(crate) fn available_ambient_credentials(
-        profile: Option<&str>,
-    ) -> Result<Vec<SourcedCredential>> {
+    pub(crate) fn available_ambient_credentials() -> Result<Vec<SourcedCredential>> {
         let mut found = Vec::new();
-        for lookup in CredentialLookup::in_resolution_order(profile, Fallback::DefaultProfile) {
+        for lookup in CredentialLookup::RESOLUTION_ORDER {
             match lookup.resolve() {
                 Ok(Some(credential)) => found.push(credential),
                 Ok(None) => {}
@@ -287,18 +250,15 @@ impl AuthenticationInfo {
         matches!(self, Self::ApiKey { api_key } if is_blank_api_key(api_key))
     }
 
-    /// The credential stored for `profile`: its keychain entry, else its
-    /// section of the credentials file. This is what [`persist`] for `profile`
-    /// replaces. The environment and other profiles are not read.
+    /// The stored credential: the keychain entry, else the credentials file.
+    /// This is what [`persist`] replaces. The environment is not read.
     ///
     /// The [`PasswordPolicy`] gate does not run, so only a caller that never
     /// authenticates with the result may call it.
-    pub(crate) fn stored_for_profile(
-        profile: Option<&str>,
-    ) -> Result<Option<Tagged<Self, CredentialStore>>> {
+    pub(crate) fn stored() -> Result<Option<Tagged<Self, CredentialStore>>> {
         for lookup in [
-            CredentialLookup::Keychain { profile },
-            CredentialLookup::CredentialsFile { profile },
+            CredentialLookup::Keychain,
+            CredentialLookup::CredentialsFile,
         ] {
             if let Some(found) = lookup.resolve_stored()? {
                 return Ok(Some(found));
@@ -307,20 +267,9 @@ impl AuthenticationInfo {
         Ok(None)
     }
 
-    /// The credential that every command finds for `profile`, with where it
-    /// comes from, or `None` when there is none. The [`PasswordPolicy`] gate
-    /// does not run, so the caller decides what a username and password
-    /// means.
-    pub(crate) fn find_ambient(profile: Option<&str>) -> Result<Option<SourcedCredential>> {
-        Self::find(profile, Fallback::DefaultProfile)
-    }
-
-    pub(crate) fn for_ambient_configuration(
-        profile: Option<&str>,
-        policy: PasswordPolicy,
-    ) -> Result<SourcedCredential> {
-        match Self::find(profile, Fallback::DefaultProfile)? {
-            Some(found) => apply_password_policy(found, policy, profile),
+    pub(crate) fn for_ambient_configuration(policy: PasswordPolicy) -> Result<SourcedCredential> {
+        match Self::find_ambient()? {
+            Some(found) => apply_password_policy(found, policy),
             None => Err(user_error(NO_CREDENTIALS_MESSAGE)
                 .suggestion(no_credentials_suggestion(in_github_actions()))),
         }
@@ -393,20 +342,8 @@ pub(crate) fn refuses_renewal(status: http::StatusCode) -> bool {
         )
 }
 
-/// `snouty login` for `profile`. A bare `snouty login` writes the default
-/// profile, so a named profile is passed on.
-pub(crate) fn login_command(profile: Option<&str>) -> String {
-    match profile {
-        Some(p) => format!("`snouty login --profile {p}`"),
-        None => "`snouty login`".to_owned(),
-    }
-}
-
-/// The one step that fixes `credential` when the tenant of `profile` rejects it.
-pub(crate) fn rejected_credential_next_step(
-    credential: &SourcedCredential,
-    profile: Option<&str>,
-) -> String {
+/// The one step that fixes `credential` when the tenant rejects it.
+pub(crate) fn rejected_credential_next_step(credential: &SourcedCredential) -> String {
     match (credential.value(), credential.tag()) {
         (AuthenticationInfo::GithubActionsOidc(_), _) => OIDC_REJECTED_NEXT_STEP.to_owned(),
         // `snouty login` cannot help: the environment hides what it stores.
@@ -414,11 +351,7 @@ pub(crate) fn rejected_credential_next_step(
             "set `{}` to a valid {credential}",
             variables.join("` and `")
         ),
-        // A named profile with no credential uses the default profile's, so
-        // the login goes to the selected profile.
-        (_, CredentialSource::Stored(_)) => {
-            format!("run {} to fix authentication", login_command(profile))
-        }
+        (_, CredentialSource::Stored(_)) => "run `snouty login` to fix authentication".to_owned(),
     }
 }
 
@@ -431,29 +364,16 @@ mod tests {
         let api_key = || AuthenticationInfo::ApiKey {
             api_key: crate::testutils::fake_secrets::FAKE_API_KEY_A.to_owned(),
         };
-        let stored = |profile: Option<&str>| {
-            api_key().with_tag(CredentialSource::Stored(CredentialStore::Keychain {
-                profile: profile.map(str::to_owned),
-            }))
-        };
+        let stored = api_key().with_tag(CredentialSource::Stored(CredentialStore::Keychain));
         assert_eq!(
-            rejected_credential_next_step(&stored(None), None),
+            rejected_credential_next_step(&stored),
             "run `snouty login` to fix authentication"
-        );
-        assert_eq!(
-            rejected_credential_next_step(&stored(Some("default")), Some("default")),
-            "run `snouty login --profile default` to fix authentication"
-        );
-        // A named profile without its own credential uses the default one.
-        assert_eq!(
-            rejected_credential_next_step(&stored(None), Some("staging")),
-            "run `snouty login --profile staging` to fix authentication"
         );
         let env_key = api_key().with_tag(CredentialSource::Environment {
             variables: vec![API_KEY_VAR_NAME],
         });
         assert_eq!(
-            rejected_credential_next_step(&env_key, Some("staging")),
+            rejected_credential_next_step(&env_key),
             "set `ANTITHESIS_API_KEY` to a valid API key"
         );
         let env_password = AuthenticationInfo::Password {
@@ -464,7 +384,7 @@ mod tests {
             variables: vec![USERNAME_VAR_NAME, PASSWORD_VAR_NAME],
         });
         assert_eq!(
-            rejected_credential_next_step(&env_password, None),
+            rejected_credential_next_step(&env_password),
             "set `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD` to a valid username and password"
         );
         let oidc = AuthenticationInfo::GithubActionsOidc(GithubActionsOidcToken::new(
@@ -475,51 +395,8 @@ mod tests {
             variables: vec![OIDC_URL_VAR_NAME, OIDC_TOKEN_VAR_NAME],
         });
         assert_eq!(
-            rejected_credential_next_step(&oidc, None),
+            rejected_credential_next_step(&oidc),
             OIDC_REJECTED_NEXT_STEP
         );
-    }
-
-    #[test]
-    fn a_named_profile_uses_the_default_profile_only_with_the_fallback() {
-        use CredentialLookup::{CredentialsFile, Environment, GithubActionsOidc, Keychain};
-        let own = [
-            Environment,
-            Keychain {
-                profile: Some("acme-prod"),
-            },
-            CredentialsFile {
-                profile: Some("acme-prod"),
-            },
-        ];
-        let default = [
-            Keychain { profile: None },
-            CredentialsFile { profile: None },
-        ];
-        assert_eq!(
-            CredentialLookup::in_resolution_order(Some("acme-prod"), Fallback::None)
-                .collect::<Vec<_>>(),
-            [own.as_slice(), &[GithubActionsOidc]].concat(),
-        );
-        assert_eq!(
-            CredentialLookup::in_resolution_order(Some("acme-prod"), Fallback::DefaultProfile)
-                .collect::<Vec<_>>(),
-            [own.as_slice(), &default, &[GithubActionsOidc]].concat(),
-        );
-    }
-
-    #[test]
-    fn the_default_profile_always_uses_its_own_entries() {
-        for fallback in [Fallback::None, Fallback::DefaultProfile] {
-            assert_eq!(
-                CredentialLookup::in_resolution_order(None, fallback).collect::<Vec<_>>(),
-                [
-                    CredentialLookup::Environment,
-                    CredentialLookup::Keychain { profile: None },
-                    CredentialLookup::CredentialsFile { profile: None },
-                    CredentialLookup::GithubActionsOidc,
-                ],
-            );
-        }
     }
 }

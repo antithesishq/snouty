@@ -239,13 +239,9 @@ pub struct Cli {
     #[arg(long, global = true, display_order = 1001)]
     pub verbose: bool,
 
-    /// Path to the snouty settings file (default: ./.snouty.toml; overrides SNOUTY_SETTINGS_PATH)
+    /// Path to a settings file that overrides the global settings file (overrides SNOUTY_SETTINGS_PATH)
     #[arg(long, global = true, display_order = 1002)]
     pub settings: Option<std::path::PathBuf>,
-
-    /// Settings profile to select (overrides ANTITHESIS_PROFILE)
-    #[arg(long, global = true, value_parser = validate_non_empty, display_order = 1003)]
-    pub profile: Option<String>,
 
     #[command(subcommand)]
     pub command: Commands,
@@ -307,7 +303,7 @@ pub enum Commands {
         command: DocsCommands,
     },
 
-    /// Show snouty's settings, and trust or deny a project settings file
+    /// Show snouty's settings
     Settings {
         #[command(subcommand)]
         command: SettingsCommands,
@@ -500,34 +496,11 @@ pub enum DockerCredentialAction {
     List,
 }
 
-fn validate_non_empty(value: &str) -> Result<String, String> {
-    if value.trim().is_empty() {
-        Err("Value may not be empty or whitespace".to_owned())
-    } else {
-        Ok(value.to_owned())
-    }
-}
-
 #[derive(Subcommand)]
 pub enum SettingsCommands {
     /// Print the settings that snouty resolved
     #[command(arg = json(JsonShape::Object))]
     Show,
-
-    /// Use a project settings file while its content stays the same
-    #[command(arg = json(JsonShape::None))]
-    Trust(SettingsFileArgs),
-
-    /// Ignore a project settings file
-    #[command(arg = json(JsonShape::None))]
-    Deny(SettingsFileArgs),
-}
-
-#[derive(Args)]
-pub struct SettingsFileArgs {
-    /// The project settings file
-    #[arg(default_value = crate::settings::PROJECT_SETTINGS_FILENAME)]
-    pub path: std::path::PathBuf,
 }
 
 #[derive(Subcommand)]

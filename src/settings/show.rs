@@ -5,7 +5,6 @@ use color_eyre::eyre::Result;
 use serde_json::{Map, Value, json};
 
 use super::Settings;
-use super::trust::trust_file_path;
 use crate::auth::credentials_file_path;
 use crate::features::{self, Feature};
 use crate::known_path::{KnownPath, KnownPathKind};
@@ -32,7 +31,6 @@ fn rows(settings: &Settings, features: &[Feature]) -> Vec<(&'static str, Value, 
 
     let max_file_size = settings.api_cache_max_file_size();
     let mut rows = vec![
-        text_row("profile", settings.profile(), "default"),
         text_row("tenant", settings.tenant(), NOT_SET),
         text_row("registry", settings.registry().map(Tagged::value), NOT_SET),
         text_row("base_url", settings.base_url(), NOT_SET),
@@ -61,17 +59,10 @@ fn rows(settings: &Settings, features: &[Feature]) -> Vec<(&'static str, Value, 
 
 pub fn cmd_settings_show(settings: &Settings, json: bool) -> Result<()> {
     let rows = rows(settings, &features::enabled());
-    let listed = [
-        (KnownPathKind::Credentials, credentials_file_path()),
-        (KnownPathKind::Trust, trust_file_path()),
-    ]
-    .into_iter()
-    .filter_map(|(kind, path)| {
-        path.filter(|path| path.is_file())
-            .map(|path| KnownPath::new(kind, &path))
-    })
-    .collect::<Vec<_>>();
-    let files: Vec<&KnownPath> = settings.files().iter().chain(&listed).collect();
+    let credentials = credentials_file_path()
+        .filter(|path| path.is_file())
+        .map(|path| KnownPath::new(KnownPathKind::Credentials, &path));
+    let files: Vec<&KnownPath> = settings.files().iter().chain(&credentials).collect();
     let mut stdout = stdio::stdout();
     if json {
         let object: Map<String, Value> = rows

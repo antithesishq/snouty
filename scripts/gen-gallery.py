@@ -2006,7 +2006,7 @@ def rows_at_most_with_run_cells(limit: int):
 
 
 def rows_at_most_with_sample_note(limit: int):
-    """`rows_at_most`, plus the note that the events are a random sample.
+    """`rows_at_most`, plus the note that the events were randomly sampled.
 
     The note implies more events match, so it belongs only when the server
     filled the limit, and it replaces the end-of-stream marker. Fewer rows than
@@ -2018,7 +2018,8 @@ def rows_at_most_with_sample_note(limit: int):
         n = len(sr.rows or [])
         noun = "event" if limit == 1 else "events"
         noted = (
-            f"Showing a random sample of {limit} matching {noun}." in sr.result.combined
+            f"showing {limit} randomly sampled {noun}; raise the limit for more"
+            in sr.result.combined
         )
         ended = END_OF_STREAM in sr.result.combined
         filled = n == limit
@@ -3238,7 +3239,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "A `moment INPUT_HASH` divider groups `VTIME [source] payload` lines. Its "
             "hash is sufficient for `runs logs` to stream to the end of its branch. "
             "When more events match than the default limit of "
-            "50, a stderr note says the output is a random sample of them.",
+            "50, a stderr note says the events were randomly sampled.",
             ["runs", "events", d.success, "--match", kw],
             event_keyword_present(kw),
         ),
@@ -3250,7 +3251,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "server-side.",
             f"At least one row, and every row's raw JSON contains both '{kw}' and '{kw2}'. "
             "When more events match than the default limit of 50, a stderr note says "
-            "the output is a random sample of them.",
+            "the events were randomly sampled.",
             ["runs", "events", d.success, "--match", kw, "--match", kw2],
             event_multi_match(kw, kw2),
         ),
@@ -3285,8 +3286,8 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             f"At least one matching event line, keyword '{kw}' visible. A `moment INPUT_HASH` "
             "divider groups `VTIME [source] payload` lines. Its hash is sufficient for "
             "`runs logs` to stream to the end of its branch. When more "
-            "events match than the default limit of 50, a stderr note says the output "
-            "is a random sample of them.",
+            "events match than the default limit of 50, a stderr note says the events "
+            "were randomly sampled.",
             ["runs", "search", d.success, f'contains({{output_text: "{kw}"}})'],
             event_keyword_present(kw),
         ),
@@ -3296,7 +3297,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "I want only a few matches, not the whole stream — and I want to "
             "know whether those are all of them.",
             "At most 3 event lines, then the command exits promptly. With 3 lines, a "
-            "stderr note says the output is a random sample of the matching events; with "
+            "stderr note says the events were randomly sampled; with "
             "fewer, the end-of-stream marker follows instead.",
             [
                 "runs",

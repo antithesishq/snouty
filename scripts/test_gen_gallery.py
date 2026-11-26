@@ -103,7 +103,7 @@ class TerminalCapture(unittest.TestCase):
         result = self.snouty.run(
             [
                 "-c",
-                "import os; os.write(2, b'Showing a random sample of 2 matching events.\\n')",
+                "import os; os.write(2, b'showing 2 randomly sampled events; raise the limit for more\\n')",
             ]
         )
         story = next(

@@ -74,10 +74,10 @@ fn limit_note(
 ///
 /// Commentary goes to stderr and only in text mode: under `--json` the rows
 /// are the whole answer. An empty stream gets `empty_message`. A stream that
-/// filled its `limit` gets a note that the events are a random sample, and any
-/// other stream gets an end marker, so a quiet stream doesn't read as one cut
-/// short. Either one is set apart by a blank line because the text rendering
-/// separates its moment blocks with blank lines.
+/// filled its `limit` gets a note that the events were randomly sampled, and
+/// any other stream gets an end marker, so a quiet stream doesn't read as one
+/// cut short. Either one is set apart by a blank line because the text
+/// rendering separates its moment blocks with blank lines.
 async fn print_event_lines(
     mut lines: BoxStream<'_, Result<String>>,
     output: EventOutput,
@@ -105,8 +105,8 @@ async fn print_event_lines(
             limit,
             true,
             format_args!(
-                "Showing a random sample of {}.",
-                count(limit.get(), "matching event")
+                "showing {}; raise the limit for more",
+                count(limit.get(), "randomly sampled event")
             ),
         ),
         _ => eprintln!("\n— end of stream"),

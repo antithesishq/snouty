@@ -2375,7 +2375,7 @@ mod tests {
     }
 
     /// Login replaces a username and password that an older snouty stored
-    /// with an API key, without asking, because login cannot pass with them.
+    /// with an API key, without asking, because it reads as nothing stored.
     #[tokio::test]
     async fn login_replaces_a_stored_username_and_password_with_an_api_key() -> Result<()> {
         let env = LoginEnv::new();

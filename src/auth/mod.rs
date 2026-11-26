@@ -28,7 +28,8 @@ pub use oidc::GithubActionsOidcToken;
 pub(crate) use oidc::{OIDC_REJECTED_NEXT_STEP, OidcFetchError};
 #[cfg(test)]
 use oidc::{OIDC_TOKEN_VAR_NAME, OIDC_URL_VAR_NAME};
-pub(crate) use password::{PASSWORD_VAR_NAME, USERNAME_VAR_NAME, UnsupportedPassword};
+pub(crate) use password::UnsupportedPassword;
+use password::{PASSWORD_VAR_NAME, USERNAME_VAR_NAME};
 pub use store::initialize_credential_store;
 pub(crate) use store::{
     CredentialStore, PersistableCredentials, credentials_file_path, keychain_entry_name, persist,

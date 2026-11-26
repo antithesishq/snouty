@@ -3636,8 +3636,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             json_capable=False,
             env={
                 **_doctor_env(api_key=True, tenant=True, registry=True),
-                "ANTITHESIS_USERNAME": "demo-user",
-                "ANTITHESIS_PASSWORD": _FAKE_PASSWORD,
+                **_LEGACY_PASSWORD_ENV,
             },
         ),
         Story(
@@ -3683,8 +3682,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             json_capable=False,
             env={
                 **_doctor_env(api_key=False, tenant=True, registry=True),
-                "ANTITHESIS_USERNAME": "demo-user",
-                "ANTITHESIS_PASSWORD": _FAKE_PASSWORD,
+                **_LEGACY_PASSWORD_ENV,
             },
         ),
         # -- config ---------------------------------------------------------
@@ -4938,6 +4936,11 @@ _KEPT_REGISTRY = f"Saved tenant `{_TENANT}` and registry `{_REGISTRY}`."
 _SEED_PASSWORD_CREDS_TOML = (
     f'[default]\ntype = "Password"\nusername = "puser"\npassword = "{_FAKE_PASSWORD}"\n'
 )
+# A username and password exported as an older snouty read them.
+_LEGACY_PASSWORD_ENV = {
+    "ANTITHESIS_USERNAME": "demo-user",
+    "ANTITHESIS_PASSWORD": _FAKE_PASSWORD,
+}
 
 # Shared satisfaction rubric for the TTY stories: judge the conversation AND the
 # persisted result, not just the exit code.

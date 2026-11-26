@@ -266,7 +266,7 @@ fn persist_to_file(credentials: PersistableCredentials, path: &Path) -> Result<(
     write_atomically(path, toml::to_string_pretty(&file)?.as_bytes())
 }
 
-pub(super) fn parse_credentials_file_toml(contents: &str, path: &Path) -> Result<CredentialsFile> {
+fn parse_credentials_file_toml(contents: &str, path: &Path) -> Result<CredentialsFile> {
     toml::from_str::<CredentialsFile>(contents)
         .wrap_err_with(|| {
             format!(
@@ -285,7 +285,7 @@ pub(super) fn parse_credentials_file_toml(contents: &str, path: &Path) -> Result
 /// The credentials file. It keeps the credential in a `[default]` table, the
 /// layout of earlier releases.
 #[derive(Serialize, Deserialize)]
-pub(super) struct CredentialsFile {
+struct CredentialsFile {
     default: Option<PersistableCredentials>,
 }
 

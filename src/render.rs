@@ -620,7 +620,7 @@ mod tests {
         assert!(wrapped.lines().count() > 1);
         assert!(wrapped.lines().all(|l| l.len() <= 100), "got: {wrapped}");
         // A short line keeps its exact bytes, including internal alignment.
-        assert_eq!(wrap("  profile     (none)"), "  profile     (none)");
+        assert_eq!(wrap("  tenant      not set"), "  tenant      not set");
         assert_eq!(wrap(""), "");
     }
 

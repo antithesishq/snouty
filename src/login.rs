@@ -478,14 +478,12 @@ async fn fetch_registry(
     let tenant = tenant_url.tenant;
     // Login can replace only a credential that it stores, and only at a
     // terminal.
-    let login_again = || {
-        if interactive {
-            "run `snouty login` again, and enter an API key or sign in with single sign-on"
-        } else if in_github_actions() {
-            no_credentials_suggestion(true)
-        } else {
-            "set ANTITHESIS_API_KEY, or run `snouty login` in a terminal"
-        }
+    let login_again = if interactive {
+        "run `snouty login` again, and enter an API key or sign in with single sign-on"
+    } else if in_github_actions() {
+        no_credentials_suggestion(true)
+    } else {
+        "set ANTITHESIS_API_KEY, or run `snouty login` in a terminal"
     };
     let nothing_to_check = || {
         user_error(format!(
@@ -498,7 +496,7 @@ async fn fetch_registry(
         Some(credentials) => (credentials.to_unrefreshable_authentication_info(), None),
         // A read error of a stored credential passes through as it is.
         None => match AuthenticationInfo::find_ambient()? {
-            None => return Err(nothing_to_check().suggestion(login_again())),
+            None => return Err(nothing_to_check().suggestion(login_again)),
             // Login does not check with a username and password.
             Some(found) if matches!(found.value(), AuthenticationInfo::Password { .. }) => {
                 let next_step = match found.tag() {
@@ -507,7 +505,7 @@ async fn fetch_registry(
                     CredentialSource::Environment { .. } => {
                         "unset ANTITHESIS_USERNAME and ANTITHESIS_PASSWORD"
                     }
-                    CredentialSource::Stored(_) => login_again(),
+                    CredentialSource::Stored(_) => login_again,
                 };
                 return Err(nothing_to_check().suggestion(next_step));
             }
@@ -537,7 +535,7 @@ async fn fetch_registry(
             .map_err(|err| match api_error_status(&err) {
                 Some(status) if rejects_credential(status) => {
                     user_error(format!("`{tenant}` did not accept the credential"))
-                        .suggestion(env_next_step.unwrap_or_else(|| login_again().to_owned()))
+                        .suggestion(env_next_step.unwrap_or_else(|| login_again.to_owned()))
                 }
                 _ => tenant_url.unreachable(&err).unwrap_or(err),
             })?;
@@ -621,10 +619,10 @@ fn print_login_summary(
 }
 
 /// Where the summary says a credential is stored.
-fn location(store: &CredentialStore) -> String {
+fn location(store: &CredentialStore) -> &'static str {
     match store {
-        CredentialStore::Keychain => "the system keychain".to_owned(),
-        CredentialStore::CredentialsFile { .. } => "the credentials file".to_owned(),
+        CredentialStore::Keychain => "the system keychain",
+        CredentialStore::CredentialsFile { .. } => "the credentials file",
     }
 }
 
@@ -2798,7 +2796,7 @@ mod tests {
         let resolved = AuthenticationInfo::stored()?;
         match resolved.as_ref().map(|found| (found.value(), found.tag())) {
             Some((AuthenticationInfo::ApiKey { api_key }, CredentialStore::Keychain)) => {
-                assert_eq!(api_key.as_str(), FAKE_API_KEY_A)
+                assert_eq!(api_key.as_str(), FAKE_API_KEY_A);
             }
             _ => panic!("expected the API key to resolve from the keychain"),
         }

@@ -38,7 +38,6 @@ const GLOBAL_SETTINGS_FILENAME: &str = "settings.toml";
 const REGISTRY_KEY: &str = "registry";
 /// An alias for [`REGISTRY_KEY`].
 const REPOSITORY_KEY: &str = "repository";
-const NO_GLOBAL_SETTINGS_DIR: &str = "Could not determine global settings directory. Ensure either $XDG_CONFIG_HOME or $HOME is set.";
 
 /// snouty's subdirectory under an XDG base dir: `$<xdg_var>/snouty`, falling
 /// back to `$HOME/<home_subdir>/snouty`. `None` when neither is set (e.g.
@@ -116,7 +115,13 @@ impl Settings {
     /// exist. A settings file that exists but cannot be read or parsed is an
     /// error.
     pub fn resolve(settings_path: Option<PathBuf>) -> Result<Self> {
-        SettingsSources::from_ambient(explicit_settings_path(settings_path)?.as_deref())?.resolve()
+        // An empty `SNOUTY_SETTINGS_PATH` is unset; it would otherwise name
+        // an empty path that must, and cannot, exist.
+        let settings_path = match settings_path {
+            Some(path) => Some(path),
+            None => env::var(SNOUTY_SETTINGS_PATH_VAR_NAME)?.map(PathBuf::from),
+        };
+        SettingsSources::from_ambient(settings_path.as_deref())?.resolve()
     }
 }
 
@@ -346,8 +351,8 @@ impl Settings {
     }
 }
 
-/// Builds a test `Settings` without resolution. Each value except `registry`
-/// is tagged as if its environment variable set it.
+/// Builds a test `Settings` without resolution. Each value is tagged as if
+/// its environment variable set it.
 #[cfg(test)]
 pub struct SettingsBuilder(Settings);
 
@@ -356,12 +361,6 @@ impl SettingsBuilder {
     #[must_use]
     pub fn tenant(mut self, value: Tenant) -> Self {
         self.0.tenant = Some(value.with_tag(SettingSource::Env(ANTITHESIS_TENANT_VAR_NAME)));
-        self
-    }
-
-    #[must_use]
-    pub fn registry(mut self, value: Tagged<Registry, SettingSource>) -> Self {
-        self.0.registry = Some(value);
         self
     }
 
@@ -387,16 +386,6 @@ impl SettingsBuilder {
     }
 }
 
-/// The settings file that the user named: the `--settings` flag
-/// (`flag`), otherwise `SNOUTY_SETTINGS_PATH`. An empty `SNOUTY_SETTINGS_PATH`
-/// is unset; it would otherwise name an empty path that must, and cannot, exist.
-fn explicit_settings_path(flag: Option<PathBuf>) -> Result<Option<PathBuf>> {
-    match flag {
-        Some(path) => Ok(Some(path)),
-        None => Ok(env::var(SNOUTY_SETTINGS_PATH_VAR_NAME)?.map(PathBuf::from)),
-    }
-}
-
 /// Writes `tenant`, `registry` and, when given, `base_url` into the global
 /// `settings.toml`. Returns what puts the file back as it was.
 pub(crate) fn update_settings_in_global_file(
@@ -404,9 +393,10 @@ pub(crate) fn update_settings_in_global_file(
     registry: &str,
     base_url: Option<&str>,
 ) -> Result<PreviousSettingsFile> {
-    let path = global_settings_dir()
-        .ok_or_eyre(NO_GLOBAL_SETTINGS_DIR)?
-        .join(GLOBAL_SETTINGS_FILENAME);
+    let settings_dir = global_settings_dir().ok_or_eyre(
+        "Could not determine global settings directory. Ensure either $XDG_CONFIG_HOME or $HOME is set.",
+    )?;
+    let path = settings_dir.join(GLOBAL_SETTINGS_FILENAME);
     let previous = KnownPath::new(KnownPathKind::Global, &path).read(false)?;
     let mut contents = match &previous {
         Some(file) => file.clone().load()?.table,
@@ -420,7 +410,8 @@ pub(crate) fn update_settings_in_global_file(
     }
     // The file never holds the alias beside `registry`.
     contents.remove(REPOSITORY_KEY);
-    write_global_toml(GLOBAL_SETTINGS_FILENAME, &contents)?;
+    mkdir(&settings_dir, true, 0o700)?;
+    write_atomically(&path, toml::to_string_pretty(&contents)?.as_bytes())?;
     Ok(PreviousSettingsFile {
         path,
         contents: previous.map(|file| file.text),
@@ -444,16 +435,6 @@ impl PreviousSettingsFile {
         }
         .wrap_err_with(|| format!("could not restore {}", self.path.display()))
     }
-}
-
-/// Atomically write `value` as TOML to `filename` in the global settings dir,
-/// and return the path it wrote.
-fn write_global_toml(filename: &str, value: &impl serde::Serialize) -> Result<PathBuf> {
-    let settings_dir = global_settings_dir().ok_or_eyre(NO_GLOBAL_SETTINGS_DIR)?;
-    let path = settings_dir.join(filename);
-    mkdir(&settings_dir, true, 0o700)?;
-    write_atomically(&path, toml::to_string_pretty(value)?.as_bytes())?;
-    Ok(path)
 }
 
 /// Replace the file at `path` with `contents` through a temporary file in
@@ -577,8 +558,9 @@ type ValueReader = fn(&Value) -> Result<String, String>;
 /// layer reads the names in order, so the first name wins over a later one
 /// in the same layer, and a higher layer wins over both.
 ///
-/// A layer that has the key with a value of the wrong type is an error. Resolution does not skip to a lower layer,
-/// so a typo such as `tenant = 123` is reported.
+/// A layer that has the key with a value of the wrong type is an error.
+/// Resolution does not skip to a lower layer, so a typo such as
+/// `tenant = 123` is reported.
 fn resolve_value_with(
     read: ValueReader,
     keys: &[&str],

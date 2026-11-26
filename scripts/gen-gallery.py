@@ -5920,8 +5920,8 @@ def _run_isolated_story(sn: Snouty, story: Story) -> StoryRun:
     leak in. The home starts empty, which models an unconfigured machine;
     `seed_files` writes the persisted state a story needs. `$XDG_CONFIG_HOME`
     points at `<home>/.config`, so a seed path means the same here as in
-    `run_tty_story`. These stories validate their primary result directly; they do not need a second
-    JSON command."""
+    `run_tty_story`. These stories validate their primary result directly;
+    they do not need a second JSON command."""
     home = Path(tempfile.mkdtemp(prefix="snouty-gallery-config."))
     try:
         _write_seed_files(home, story.seed_files)

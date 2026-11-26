@@ -88,8 +88,9 @@ struct TenantRegistryEnv {
 }
 
 impl TenantRegistryEnv {
-    /// `env`, plus the registry and the `--settings` flag of `auth`. The helper needs the registry because no setting names the
-    /// registry that the tenant reports.
+    /// `env`, plus the registry and the `--settings` flag of `auth`. The
+    /// helper needs the registry because no setting names the registry that
+    /// the tenant reports.
     fn new(
         auth: TenantRegistryAuth,
         mut env: Vec<(&'static str, OsString)>,

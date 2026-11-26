@@ -1343,7 +1343,7 @@ mod tests {
                     path: "/home/.config/snouty/settings.toml".into(),
                 },
                 key: "registry".into(),
-            },),
+            }),
             "you can keep using `proxy.example.com/acme`, or run `snouty login` to switch to it"
         );
         // `snouty login` writes the global settings file, which the

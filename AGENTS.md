@@ -319,7 +319,7 @@ issue with a link that opens its pull request. The script pins the new release,
 and applies clippy's fixes as if `rust-version` were that release. Only when
 that changes code does it raise `rust-version`, to the oldest Rust that builds
 the result, which `cargo msrv find` finds. To move to a new Rust by hand, run
-the script with the release, from a clean tree, with rustup and mise's
+the script with the release, with no uncommitted .rs changes, with rustup and mise's
 cargo-msrv (`mise exec -- scripts/bump-rust.sh 1.101.0`), after `npins update rust-overlay` when the
 overlay does not have it yet. Do not raise `rust-version` for any other reason
 than a dependency or a feature that needs it.

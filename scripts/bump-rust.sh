@@ -5,7 +5,8 @@
 # Raises `rust-version` in Cargo.toml only when clippy, allowed to use VERSION,
 # changes code, and then sets it to the oldest Rust that builds the result.
 #
-# Needs rustup, cargo-msrv and a clean tree. It stages the files it changes.
+# Needs rustup, cargo-msrv and no uncommitted .rs changes. It stages the files
+# it changes.
 # When GITHUB_OUTPUT is set, it writes the final `rust-version` to the `msrv`
 # output.
 set -euo pipefail
@@ -14,7 +15,7 @@ cd "$(dirname "$0")/.."
 version=$1
 [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "not a stable Rust version: $version" >&2; exit 1; }
 newest=${version%.*}
-git diff --quiet HEAD || { echo "the tree has uncommitted changes" >&2; exit 1; }
+git diff --quiet HEAD -- '*.rs' || { echo "commit or drop the .rs changes first" >&2; exit 1; }
 current=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)
 [[ -n $current ]] || { echo "no rust-version in Cargo.toml" >&2; exit 1; }
 

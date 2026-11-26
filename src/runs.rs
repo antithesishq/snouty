@@ -2807,7 +2807,7 @@ fn render_runs_table(runs: &[RunSummary], width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testutils::fake_secrets::{FAKE_API_KEY_A, FAKE_PASSWORD};
+    use crate::testutils::fake_secrets::FAKE_API_KEY_A;
     use hegel::generators;
     use jiff::SignedDuration;
 
@@ -5381,9 +5381,8 @@ mod tests {
         fn test_api(base_url: &str) -> AntithesisApi {
             AntithesisApi::build(
                 &Settings::for_test_base_url(base_url),
-                AuthenticationInfo::Password {
-                    username: "user".to_string(),
-                    password: FAKE_PASSWORD.to_string(),
+                AuthenticationInfo::ApiKey {
+                    api_key: FAKE_API_KEY_A.to_owned(),
                 },
                 false,
                 crate::api::ResponseCache::Disabled,

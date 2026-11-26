@@ -9,7 +9,6 @@ mod oidc;
 mod password;
 mod store;
 
-use base64::{Engine, prelude::BASE64_STANDARD};
 use color_eyre::{
     Section,
     eyre::{Context, OptionExt, Result, eyre},
@@ -29,10 +28,7 @@ pub use oidc::GithubActionsOidcToken;
 pub(crate) use oidc::{OIDC_REJECTED_NEXT_STEP, OidcFetchError};
 #[cfg(test)]
 use oidc::{OIDC_TOKEN_VAR_NAME, OIDC_URL_VAR_NAME};
-use password::apply_password_policy;
-pub(crate) use password::{
-    PASSWORD_VAR_NAME, PasswordPolicy, USERNAME_VAR_NAME, basic_auth_next_step,
-};
+pub(crate) use password::{PASSWORD_VAR_NAME, USERNAME_VAR_NAME, UnsupportedPassword};
 pub use store::initialize_credential_store;
 pub(crate) use store::{
     CredentialStore, PersistableCredentials, credentials_file_path, keychain_entry_name, persist,
@@ -97,7 +93,6 @@ pub enum AuthenticationInfo {
     ApiKey { api_key: String },
     GithubActionsOidc(GithubActionsOidcToken),
     OAuth(RefreshableOAuthToken),
-    Password { username: String, password: String },
 }
 
 impl std::fmt::Debug for AuthenticationInfo {
@@ -111,11 +106,6 @@ impl std::fmt::Debug for AuthenticationInfo {
                 f.debug_tuple("GithubActionsOidc").field(token).finish()
             }
             Self::OAuth(token) => f.debug_tuple("OAuth").field(token).finish(),
-            Self::Password { username, .. } => f
-                .debug_struct("Password")
-                .field("username", username)
-                .field("password", &"[REDACTED]")
-                .finish(),
         }
     }
 }
@@ -127,7 +117,6 @@ impl std::fmt::Display for AuthenticationInfo {
             Self::ApiKey { .. } => "API key",
             Self::GithubActionsOidc(_) => "GitHub Actions OIDC token",
             Self::OAuth(_) => "OAuth credentials",
-            Self::Password { .. } => "username and password",
         })
     }
 }
@@ -224,14 +213,8 @@ impl AuthenticationInfo {
             )));
         }
 
-        if let Some(username) = env::var(USERNAME_VAR_NAME)?
-            && let Some(password) = env::var(PASSWORD_VAR_NAME)?
-        {
-            return Ok(Some(Self::Password { username, password }.with_tag(
-                CredentialSource::Environment {
-                    variables: vec![USERNAME_VAR_NAME, PASSWORD_VAR_NAME],
-                },
-            )));
+        if env::var(USERNAME_VAR_NAME)?.is_some() || env::var(PASSWORD_VAR_NAME)?.is_some() {
+            return Err(UnsupportedPassword::Environment.into_report());
         }
 
         Ok(None)
@@ -242,11 +225,9 @@ impl AuthenticationInfo {
     /// GitHub Actions OIDC environment. Unlike the lookup of every command,
     /// a named profile does not use the stored credential of the default
     /// profile. The environment applies to every profile. It makes no network
-    /// call, and `policy` applies to a username and password.
-    pub(crate) fn find_own(profile: Option<&str>, policy: PasswordPolicy) -> Result<Option<Self>> {
-        Self::find(profile, Fallback::None)?
-            .map(|found| Ok(apply_password_policy(found, policy, profile)?.untag()))
-            .transpose()
+    /// call.
+    pub(crate) fn find_own(profile: Option<&str>) -> Result<Option<Self>> {
+        Ok(Self::find(profile, Fallback::None)?.map(Tagged::untag))
     }
 
     fn find(profile: Option<&str>, fallback: Fallback) -> Result<Option<SourcedCredential>> {
@@ -261,9 +242,8 @@ impl AuthenticationInfo {
     /// Every credential that snouty finds, in resolution order: the first is
     /// the one every command uses, and each later one is ignored.
     ///
-    /// This always opens the system keychain, and the [`PasswordPolicy`] gate
-    /// does not run. Only a command that reports on the credentials may call
-    /// it, and only one that never authenticates with the result.
+    /// This always opens the system keychain. Only a command that reports on
+    /// the credentials may call it.
     pub(crate) fn available_ambient_credentials(
         profile: Option<&str>,
     ) -> Result<Vec<SourcedCredential>> {
@@ -290,9 +270,6 @@ impl AuthenticationInfo {
     /// The credential stored for `profile`: its keychain entry, else its
     /// section of the credentials file. This is what [`persist`] for `profile`
     /// replaces. The environment and other profiles are not read.
-    ///
-    /// The [`PasswordPolicy`] gate does not run, so only a caller that never
-    /// authenticates with the result may call it.
     pub(crate) fn stored_for_profile(
         profile: Option<&str>,
     ) -> Result<Option<Tagged<Self, CredentialStore>>> {
@@ -308,29 +285,24 @@ impl AuthenticationInfo {
     }
 
     /// The credential that every command finds for `profile`, with where it
-    /// comes from, or `None` when there is none. The [`PasswordPolicy`] gate
-    /// does not run, so the caller decides what a username and password
-    /// means.
+    /// comes from, or `None` when there is none.
     pub(crate) fn find_ambient(profile: Option<&str>) -> Result<Option<SourcedCredential>> {
         Self::find(profile, Fallback::DefaultProfile)
     }
 
-    pub(crate) fn for_ambient_configuration(
-        profile: Option<&str>,
-        policy: PasswordPolicy,
-    ) -> Result<SourcedCredential> {
+    pub(crate) fn for_ambient_configuration(profile: Option<&str>) -> Result<SourcedCredential> {
         match Self::find(profile, Fallback::DefaultProfile)? {
-            Some(found) => apply_password_policy(found, policy, profile),
+            Some(found) => Ok(found),
             None => Err(user_error(NO_CREDENTIALS_MESSAGE)
                 .suggestion(no_credentials_suggestion(in_github_actions()))),
         }
     }
 
     /// Whether the credential needs a [`refresh`](Self::refresh) before its
-    /// next request. An API key and a password never expire.
+    /// next request. An API key never expires.
     pub(crate) fn expired(&self) -> bool {
         match self {
-            Self::ApiKey { .. } | Self::Password { .. } => false,
+            Self::ApiKey { .. } => false,
             Self::GithubActionsOidc(token) => token.expired(),
             Self::OAuth(token) => token.expired(),
         }
@@ -341,11 +313,11 @@ impl AuthenticationInfo {
     /// `client`, and a GitHub Actions OIDC credential fetches a new token
     /// from the Actions token endpoint.
     ///
-    /// Fails when there is no newer token. An API key and a password always
-    /// fail, because nothing replaces them.
+    /// Fails when there is no newer token. An API key always fails, because
+    /// nothing replaces it.
     pub(crate) async fn refresh(&self, client: &reqwest::Client, base_url: &str) -> Result<()> {
         match self {
-            Self::ApiKey { .. } | Self::Password { .. } => Err(eyre!("cannot refresh the {self}")),
+            Self::ApiKey { .. } => Err(eyre!("cannot refresh the {self}")),
             Self::GithubActionsOidc(token) => token.refresh().await,
             Self::OAuth(token) => token.refresh(client, base_url).await,
         }
@@ -366,11 +338,6 @@ impl AuthenticationInfo {
             }
             Self::OAuth(token) => {
                 to_header_value(&format!("Bearer {}", token.access_token()), true)
-            }
-            Self::Password { username, password } => {
-                let credentials = format!("{username}:{password}");
-                let encoded = BASE64_STANDARD.encode(credentials);
-                to_header_value(&format!("Basic {encoded}"), true)
             }
         }
     }
@@ -455,17 +422,6 @@ mod tests {
         assert_eq!(
             rejected_credential_next_step(&env_key, Some("staging")),
             "set `ANTITHESIS_API_KEY` to a valid API key"
-        );
-        let env_password = AuthenticationInfo::Password {
-            username: crate::testutils::fake_secrets::FAKE_USERNAME.to_owned(),
-            password: crate::testutils::fake_secrets::FAKE_PASSWORD.to_owned(),
-        }
-        .with_tag(CredentialSource::Environment {
-            variables: vec![USERNAME_VAR_NAME, PASSWORD_VAR_NAME],
-        });
-        assert_eq!(
-            rejected_credential_next_step(&env_password, None),
-            "set `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD` to a valid username and password"
         );
         let oidc = AuthenticationInfo::GithubActionsOidc(GithubActionsOidcToken::new(
             "http://127.0.0.1:1/token".to_owned(),

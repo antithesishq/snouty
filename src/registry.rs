@@ -15,7 +15,7 @@ use jiff::{SignedDuration, Timestamp};
 use url::Url;
 
 use crate::api::AntithesisApi;
-use crate::auth::{AuthenticationInfo, PasswordPolicy, RefreshableOAuthToken, RenewalError};
+use crate::auth::{AuthenticationInfo, RefreshableOAuthToken, RenewalError};
 use crate::error::user_error;
 use crate::render::sanitize;
 use crate::settings::{Settings, SettingsRequest, Tenant, UnresolvedProfile};
@@ -204,19 +204,13 @@ pub fn select_settings(
         if !pushes_to_tenant(&settings, tenant) {
             return Ok(None);
         }
-        let credential = AuthenticationInfo::for_ambient_configuration(
-            settings.profile(),
-            PasswordPolicy::Reject,
-        )?
-        .untag();
+        let credential = AuthenticationInfo::for_ambient_configuration(settings.profile())?.untag();
         return Ok(Some((settings, credential)));
     }
     let profiles = request.resolve_every_profile(|tenant_setting, registry_setting| {
         pushes_to(tenant_setting, registry_setting, tenant)
     })?;
-    first_with_own_credential(profiles, tenant, |profile| {
-        AuthenticationInfo::find_own(profile, PasswordPolicy::Reject)
-    })
+    first_with_own_credential(profiles, tenant, AuthenticationInfo::find_own)
 }
 
 /// The first of `profiles` whose tenant registry is the registry of `tenant`,
@@ -264,8 +258,7 @@ fn first_with_own_credential(
 
 /// The registry secret, which the credential helper returns as `Secret` with
 /// [`USERNAME`], from the credential of `api`: the API key, the GitHub
-/// Actions OIDC token, or the OAuth access token. A username and password is
-/// an error.
+/// Actions OIDC token, or the OAuth access token.
 pub async fn secret(api: &AntithesisApi) -> Result<String> {
     match api.authentication() {
         AuthenticationInfo::ApiKey { api_key } => Ok(api_key.clone()),
@@ -280,21 +273,6 @@ pub async fn secret(api: &AntithesisApi) -> Result<String> {
                 .ok_or_eyre("no GitHub Actions OIDC token was fetched")
         }
         AuthenticationInfo::OAuth(token) => oauth_secret(api, token).await,
-        auth @ AuthenticationInfo::Password { .. } => Err(user_error(format!(
-            "the Antithesis container registry does not accept a {auth}; set ANTITHESIS_API_KEY, or run `snouty login`"
-        ))),
-    }
-}
-
-/// The registry secret that `snouty launch` presents: [`secret`], or `None`
-/// for a username and password, which the registry does not accept. With
-/// `None`, the container runtime pushes with its own credentials.
-pub async fn launch_secret(api: &AntithesisApi) -> Result<Option<String>> {
-    match api.authentication() {
-        AuthenticationInfo::Password { .. } => Ok(None),
-        AuthenticationInfo::ApiKey { .. }
-        | AuthenticationInfo::GithubActionsOidc(_)
-        | AuthenticationInfo::OAuth(_) => secret(api).await.map(Some),
     }
 }
 
@@ -336,8 +314,7 @@ mod tests {
     use crate::testutils::auth::{oauth_credential_in, paseto_expiring_in};
     use crate::testutils::fake_secrets::{
         FAKE_ACCESS_TOKEN_A, FAKE_ACCESS_TOKEN_B, FAKE_API_KEY_A, FAKE_API_KEY_B,
-        FAKE_OIDC_REQUEST_TOKEN, FAKE_OIDC_TOKEN, FAKE_PASSWORD, FAKE_REFRESH_TOKEN_A,
-        FAKE_REFRESH_TOKEN_B, FAKE_USERNAME,
+        FAKE_OIDC_REQUEST_TOKEN, FAKE_OIDC_TOKEN, FAKE_REFRESH_TOKEN_A, FAKE_REFRESH_TOKEN_B,
     };
     use hegel::generators;
     use wiremock::matchers::{header, method, path, query_param};
@@ -408,35 +385,6 @@ mod tests {
         assert_eq!(
             secret(&api(NO_SERVER, auth)).await.unwrap(),
             FAKE_OIDC_TOKEN
-        );
-    }
-
-    #[tokio::test]
-    async fn a_password_credential_is_rejected_with_the_fix() {
-        let auth = AuthenticationInfo::Password {
-            username: FAKE_USERNAME.to_owned(),
-            password: FAKE_PASSWORD.to_owned(),
-        };
-        let err = secret(&api(NO_SERVER, auth)).await.unwrap_err();
-        assert!(err.to_string().contains("set ANTITHESIS_API_KEY"), "{err}");
-    }
-
-    #[tokio::test]
-    async fn launch_presents_no_secret_for_a_password() {
-        let auth = AuthenticationInfo::Password {
-            username: FAKE_USERNAME.to_owned(),
-            password: FAKE_PASSWORD.to_owned(),
-        };
-        assert_eq!(launch_secret(&api(NO_SERVER, auth)).await.unwrap(), None);
-        let auth = AuthenticationInfo::ApiKey {
-            api_key: FAKE_API_KEY_A.to_owned(),
-        };
-        assert_eq!(
-            launch_secret(&api(NO_SERVER, auth))
-                .await
-                .unwrap()
-                .as_deref(),
-            Some(FAKE_API_KEY_A)
         );
     }
 

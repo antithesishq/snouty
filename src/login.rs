@@ -224,8 +224,9 @@ async fn do_cmd_login(
 
     // The credential stored for the profile, which a new credential replaces.
     // A read error counts as nothing stored, because storing a credential
-    // backs up an unparsable credentials file. A blank key cannot
-    // authenticate, so it also counts as nothing stored.
+    // backs up an unparsable credentials file and replaces a username and
+    // password. A blank key cannot authenticate, so it also counts as nothing
+    // stored.
     let stored = AuthenticationInfo::stored_for_profile(profile)
         .inspect_err(|err| debug!("no stored credentials to read: {err:#}"))
         .ok()
@@ -326,8 +327,10 @@ async fn do_cmd_login(
         Some(credentials) => {
             let kind = match &credentials {
                 PersistableCredentials::ApiKey { .. } => "API key",
-                PersistableCredentials::Password { .. } => "username and password",
                 PersistableCredentials::OAuth { .. } => "OAuth credentials",
+                PersistableCredentials::Password { .. } => {
+                    unreachable!("login never creates a username and password")
+                }
             };
             match persist(credentials, profile) {
                 Ok(store) => Some(kind.with_tag(store)),
@@ -508,18 +511,6 @@ async fn fetch_registry(
         // A read error of a stored credential passes through as it is.
         None => match AuthenticationInfo::find_ambient(profile)? {
             None => return Err(nothing_to_check().suggestion(login_again())),
-            // Login does not check with a username and password.
-            Some(found) if matches!(found.value(), AuthenticationInfo::Password { .. }) => {
-                let next_step = match found.tag() {
-                    // Every later command reads the environment first, so a
-                    // credential at the prompt would not replace one there.
-                    CredentialSource::Environment { .. } => {
-                        "unset ANTITHESIS_USERNAME and ANTITHESIS_PASSWORD".to_owned()
-                    }
-                    CredentialSource::Stored(_) => login_again(),
-                };
-                return Err(nothing_to_check().suggestion(next_step));
-            }
             Some(found) => {
                 let next_step = match found.tag() {
                     CredentialSource::Environment { .. } => {
@@ -648,9 +639,7 @@ fn replacing(stored: Option<&Tagged<AuthenticationInfo, CredentialStore>>) -> St
     stored.map_or_default(|stored| format!(", replacing your stored {}", stored.value()))
 }
 
-/// The credential kinds `snouty login` sets up. A username and password comes
-/// only from the environment or an older credentials file, because `snouty runs`
-/// refuses it.
+/// The credential kinds `snouty login` sets up.
 #[derive(Clone, Copy)]
 enum AuthSetupType {
     ApiKey,
@@ -742,7 +731,7 @@ async fn prompt_for_auth(
 }
 
 /// Whether to store a new credential of kind `new` over `stored`. Asks the
-/// user unless nothing or a username and password is stored.
+/// user unless nothing is stored.
 fn confirm_replacement(
     prompter: &impl Prompter,
     stored: Option<&AuthenticationInfo>,
@@ -750,10 +739,7 @@ fn confirm_replacement(
 ) -> Result<bool> {
     match (stored, new) {
         // Signing in again only renews the session that the stored tokens hold.
-        // Login cannot pass with a username and password, so keeping one is
-        // no choice.
-        (None | Some(AuthenticationInfo::Password { .. }), _)
-        | (Some(AuthenticationInfo::OAuth(_)), AuthSetupType::OAuth) => Ok(true),
+        (None, _) | (Some(AuthenticationInfo::OAuth(_)), AuthSetupType::OAuth) => Ok(true),
         (Some(stored), _) => prompter.confirm(&format!("Replace your stored {stored}?")),
     }
 }

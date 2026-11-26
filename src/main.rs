@@ -324,7 +324,7 @@ async fn cmd_launch(
         .suggestion("pass --config or --config-image"));
     }
 
-    let api = AntithesisApi::new_for_launch(settings, verbose)?;
+    let api = AntithesisApi::new(settings, verbose)?;
     if let Some((detected, name)) = config_image {
         let registry = snouty::registry::launch_registry(settings, &api).await?;
         let image_ref = container::config_image_ref(&registry, &name);
@@ -333,17 +333,12 @@ async fn cmd_launch(
 
         if snouty::registry::is_tenant_registry(settings, &registry) {
             // Podman gets the secret from the helper: for it, this is an early credential check.
-            match snouty::registry::launch_secret(&api).await? {
-                Some(secret) => rt.use_tenant_registry_auth(container::TenantRegistryAuth {
-                    registry: registry.clone(),
-                    secret,
-                    settings_path,
-                    profile,
-                }),
-                None => log::debug!(
-                    "{registry} does not accept the Antithesis credential, so the runtime pushes with its own credentials"
-                ),
-            }
+            rt.use_tenant_registry_auth(container::TenantRegistryAuth {
+                registry: registry.clone(),
+                secret: snouty::registry::secret(&api).await?,
+                settings_path,
+                profile,
+            });
         }
 
         // k8s configs reference images by name in the manifests and the
@@ -500,14 +495,11 @@ async fn cmd_debug(
     }
     params.validate_debugging_params()?;
 
-    let api = AntithesisApi::new_for_launch(settings, verbose)?;
+    let api = AntithesisApi::new(settings, verbose)?;
     // The launch endpoint accepts an unknown run or input hash and starts a
-    // billable session, so check them first. The runs endpoints refuse a
-    // password, so with one there is no way to check.
+    // billable session, so check them first.
     let param = |key| params.as_map().get(key).and_then(|v| v.as_str());
-    if let Some(run_id) = param(ANT_DEBUGGING_RUN_ID)
-        && !api.uses_password()
-    {
+    if let Some(run_id) = param(ANT_DEBUGGING_RUN_ID) {
         snouty::runs::ensure_run_debuggable(&api, run_id).await?;
         if let Some(input_hash) = param(ANT_DEBUGGING_INPUT_HASH) {
             snouty::runs::ensure_input_hash_exists(&api, run_id, input_hash).await?;

@@ -14,7 +14,10 @@ use keyring_core::Entry;
 use log::warn;
 use serde::{Deserialize, Serialize};
 
-use super::{AuthenticationInfo, RefreshableOAuthToken, claims::try_get_expiry_from_token};
+use super::{
+    AuthenticationInfo, RefreshableOAuthToken, UnsupportedPassword,
+    claims::try_get_expiry_from_token,
+};
 use crate::{
     known_path::read_to_string_if_file_exists,
     settings::{back_up_unparsable_file, global_settings_dir, mkdir, write_atomically},
@@ -95,9 +98,12 @@ impl CredentialStore {
     }
 
     pub(super) fn resolve(self) -> Result<Option<Tagged<AuthenticationInfo, Self>>> {
-        Ok(self
-            .load()?
-            .map(|found| found.convert_to_authentication_info(&self).with_tag(self)))
+        let Some(found) = self.load()? else {
+            return Ok(None);
+        };
+        Ok(Some(
+            found.convert_to_authentication_info(&self)?.with_tag(self),
+        ))
     }
 
     pub(super) fn keychain(profile: Option<&str>) -> Self {
@@ -132,6 +138,9 @@ pub(crate) enum PersistableCredentials {
         antithesis_token: String,
         refresh_token: Option<String>,
     },
+    /// A username and password that an older snouty stored. snouty refuses
+    /// it, and `snouty login` replaces it. A write of another profile to the
+    /// credentials file keeps it as it is.
     Password {
         username: String,
         password: String,
@@ -176,17 +185,14 @@ impl PersistableCredentials {
             } => AuthenticationInfo::ApiKey {
                 api_key: api_key.clone(),
             },
-            Self::Password { username, password } => AuthenticationInfo::Password {
-                username: username.clone(),
-                password: password.clone(),
-            },
+            Self::Password { .. } => unreachable!("login never creates a username and password"),
         }
     }
 
     /// An OAuth credential keeps a copy of `store`, to write a refreshed token
     /// back to it.
-    fn convert_to_authentication_info(self, store: &CredentialStore) -> AuthenticationInfo {
-        match self {
+    fn convert_to_authentication_info(self, store: &CredentialStore) -> Result<AuthenticationInfo> {
+        Ok(match self {
             Self::ApiKey { api_key } => AuthenticationInfo::ApiKey { api_key },
             Self::OAuth {
                 antithesis_token,
@@ -196,10 +202,13 @@ impl PersistableCredentials {
                 antithesis_token,
                 refresh_token,
             )),
-            Self::Password { username, password } => {
-                AuthenticationInfo::Password { username, password }
+            Self::Password { .. } => {
+                return Err(UnsupportedPassword::Stored {
+                    profile: store.profile().map(str::to_owned),
+                }
+                .into_report());
             }
-        }
+        })
     }
 }
 

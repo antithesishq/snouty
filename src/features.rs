@@ -43,7 +43,7 @@
 //! Deliberately an environment variable and not a setting. The gate has to be
 //! known before the command line is parsed, because clap reads `hide` when it
 //! builds the parser — and a setting cannot be read that early without first
-//! parsing `--settings`/`--profile`, which would mean parsing the command
+//! parsing `--settings`, which would mean parsing the command
 //! line twice. An environment variable has no such dependency.
 
 use std::fmt::{self, Display, Formatter};

@@ -3742,32 +3742,11 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "settings files, before I run a command against my tenant.",
             "settings show prints one aligned row per setting, with `not set` (or the default) "
             "for a setting that is not configured, and a size with its unit, then a TYPE/PATH "
-            "table of the files it read: project settings, global settings, then the "
-            "credentials file and the trust file when they exist.",
+            "table of the files it read: the named settings file, global settings, then the "
+            "credentials file when it exists.",
             ["settings", "show"],
             settings_show_check,
             json_capable=False,
-        ),
-        Story(
-            "settings-untrusted",
-            "A cloned repository ships a settings file",
-            "I cloned a repository that contains a .snouty.toml, and I ran snouty in it for "
-            "the first time.",
-            "snouty stops before it reads the file, names the file, and tells me how to trust it, "
-            "deny it, or skip the check in CI.",
-            ["settings", "show"],
-            fails_with(
-                "is not trusted",
-                "snouty settings trust",
-                "snouty settings deny",
-                "SNOUTY_SETTINGS_TRUST=all",
-            ),
-            json_capable=False,
-            expect_ok=False,
-            isolate_config=True,
-            seed_files={
-                ".snouty.toml": 'tenant = "acme"\nbase_url = "https://attacker.example.com"\n'
-            },
         ),
         Story(
             "doctor-json",
@@ -4591,8 +4570,8 @@ def build_help_stories(d: Discovery) -> list[Story]:
         _help_story(
             "help-settings",
             "Understand the settings command group",
-            "I run `snouty settings --help` to learn why snouty asks me to trust a "
-            "settings file, and how to see what snouty resolved.",
+            "I run `snouty settings --help` to learn where snouty reads its settings "
+            "and credentials, and how to see what snouty resolved.",
             ["settings"],
         ),
         _help_story(
@@ -4603,28 +4582,13 @@ def build_help_stories(d: Discovery) -> list[Story]:
             ["settings", "show"],
             ["settings", "show"],
         ),
-        # Help-only: `settings trust` and `settings deny` write the trust record.
-        _help_story(
-            "help-settings-trust",
-            "Learn what trusting a settings file does",
-            "I run `snouty settings trust --help` before I trust a file that came with a "
-            "repository.",
-            ["settings", "trust"],
-        ),
-        _help_story(
-            "help-settings-deny",
-            "Learn what denying a settings file does",
-            "I run `snouty settings deny --help` before I deny a file that came with a "
-            "repository I do not trust.",
-            ["settings", "deny"],
-        ),
         # `login` is interactive; the TTY stories run it, so this story shows
         # only its help.
         _help_story(
             "help-login",
             "Learn how to sign in",
             "I run `snouty login --help` to learn what login asks for, what it saves "
-            "and where, and how to sign in to a second tenant.",
+            "and where.",
             ["login"],
         ),
         # -- docs (help-only: output depends on a downloaded docs DB) --------
@@ -5956,9 +5920,7 @@ def _run_isolated_story(sn: Snouty, story: Story) -> StoryRun:
     leak in. The home starts empty, which models an unconfigured machine;
     `seed_files` writes the persisted state a story needs. `$XDG_CONFIG_HOME`
     points at `<home>/.config`, so a seed path means the same here as in
-    `run_tty_story`. The story runs in the home, so a seeded `.snouty.toml` is
-    its project settings file, and the operator's own one stays out. These
-    stories validate their primary result directly; they do not need a second
+    `run_tty_story`. These stories validate their primary result directly; they do not need a second
     JSON command."""
     home = Path(tempfile.mkdtemp(prefix="snouty-gallery-config."))
     try:
@@ -5967,9 +5929,8 @@ def _run_isolated_story(sn: Snouty, story: Story) -> StoryRun:
         env = {
             **(story.env or {}),
             "XDG_CONFIG_HOME": str(home / ".config"),
-            # The operator's own settings file and trust override stay out too.
+            # The operator's own settings file stays out too.
             "SNOUTY_SETTINGS_PATH": None,
-            "SNOUTY_SETTINGS_TRUST": None,
         }
         result = sn.run(story.args, env, story.stdin, story.pipe, cwd=home)
         return StoryRun(story, result, None)

@@ -904,7 +904,7 @@ mod tests {
         assert_eq!(Settings::default().base_url(), None);
     }
 
-    /// The settings that a project file with `contents` gives.
+    /// The settings that a named settings file with `contents` gives.
     fn resolve_file(contents: &str) -> Result<Settings> {
         sources(Some(settings_file(contents)), None).resolve()
     }

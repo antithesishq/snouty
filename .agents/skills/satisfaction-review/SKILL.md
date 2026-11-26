@@ -273,8 +273,7 @@ prompt conversation plus files written, not a table:
   and *only* for values not already known (a flag or a stored previous value
   shouldn't be re-prompted)? Was invalid input rejected? And — judged against the
   **Persisted state** section, not just the closing frame — did it write the
-  *correct* result (right tenant/repo, right credential type, right
-  `[profile.x]` scope)?
+  *correct* result (right tenant/repo, right credential type)?
 - **Axis B (follow-up readiness):** after it finishes, does the user know **what
   was saved, where, and the obvious next step** (e.g. "run `snouty doctor` to
   verify")? A login that exits `0` in silence — never confirming what it wrote —

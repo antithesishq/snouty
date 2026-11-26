@@ -343,9 +343,9 @@ fn push_and_pull_through_the_helper(runtime: &dyn snouty::container::ContainerRu
 /// - Podman gets it from `docker-credential-snouty`, which the launch links
 ///   in the global settings dir and puts first on the `PATH` of podman.
 ///
-/// The tenant and the registry come from the trusted `./.snouty.toml` of
-/// the launch, which each helper reads, because it runs in the working
-/// directory of the launch. During the push, no file in `TMPDIR` (where
+/// The tenant and the registry come from the global settings file, which
+/// each helper reads, because it gets the `XDG_CONFIG_HOME` of the launch.
+/// During the push, no file in `TMPDIR` (where
 /// snouty keeps the auth file), `$XDG_CONFIG_HOME` (where it links the
 /// helper) or the working directory holds the secret.
 ///
@@ -445,26 +445,12 @@ fn launch_pushes_with_the_registry_auth(runtime: &dyn snouty::container::Contain
     std::fs::create_dir_all(&manifests).unwrap();
     std::fs::write(manifests.join("ns.yaml"), "kind: Namespace\n").unwrap();
     let repo = snouty::testutils::unique_image_prefix(&format!("launch-auth-{engine}"));
+    std::fs::create_dir(xdg_config.join("snouty")).unwrap();
     std::fs::write(
-        work.join(".snouty.toml"),
+        xdg_config.join("snouty/settings.toml"),
         format!("tenant = \"acme\"\nregistry = \"{TENANT_HOST}/{repo}\"\n"),
     )
     .unwrap();
-    // The launch and each helper use ./.snouty.toml only because the user
-    // trusts it: the trust decisions are in the global settings dir, which
-    // both read.
-    let trust = std::process::Command::new(SNOUTY)
-        .current_dir(&work)
-        .env("XDG_CONFIG_HOME", &xdg_config)
-        .env_remove("SNOUTY_SETTINGS_TRUST")
-        .args(["settings", "trust"])
-        .output()
-        .unwrap();
-    assert!(
-        trust.status.success(),
-        "{}",
-        String::from_utf8_lossy(&trust.stderr)
-    );
 
     let to_addr = format!("s/{}/{addr}/g", TENANT_HOST.replace('.', r"\."));
     let to_host = format!("s/{}/{TENANT_HOST}/", addr.replace('.', r"\."));
@@ -567,12 +553,10 @@ sed '{to_host}' | exec '{helper}' "$@"
             "ANTITHESIS_TENANT",
             "ANTITHESIS_REGISTRY",
             "ANTITHESIS_REPOSITORY",
-            "ANTITHESIS_PROFILE",
             "ANTITHESIS_USERNAME",
             "ANTITHESIS_PASSWORD",
             "ANTITHESIS_HTTPS_PROXY",
             "SNOUTY_SETTINGS_PATH",
-            "SNOUTY_SETTINGS_TRUST",
             "REGISTRY_AUTH_FILE",
             "DOCKER_AUTH_CONFIG",
         ] {

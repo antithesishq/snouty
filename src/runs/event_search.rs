@@ -44,7 +44,9 @@ pub(super) enum EventOutput {
     Json { raw: bool, annotate_faults: bool },
     /// Text rendering through the shared [`EventStreamRenderer`]; `detail`
     /// adds a full-width vtime, source locations, and details JSON.
-    Text { detail: bool },
+    /// `inline_hash` prints each event's input hash at the start of its line
+    /// instead of `moment` dividers.
+    Text { detail: bool, inline_hash: bool },
 }
 
 impl EventOutput {
@@ -78,8 +80,15 @@ pub(super) fn render_event_stream(
                 })
                 .boxed()
         }
-        EventOutput::Text { detail } => {
-            let mut renderer = EventStreamRenderer::new(detail);
+        EventOutput::Text {
+            detail,
+            inline_hash,
+        } => {
+            let mut renderer = if inline_hash {
+                EventStreamRenderer::with_inline_hash(detail)
+            } else {
+                EventStreamRenderer::new(detail)
+            };
             event_lines(stream)
                 .map_ok(move |entry| renderer.render_entry(&entry))
                 .boxed()

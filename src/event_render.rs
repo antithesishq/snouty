@@ -93,6 +93,14 @@ const fn vtime_width(detail: bool) -> usize {
 /// The gap between the vtime cell and the source cell.
 const VTIME_GAP: usize = 2;
 
+/// The inline-hash cell: an input hash is a decimal `i64`, at most 20
+/// characters with its sign. It pads, and never truncates, so the hash
+/// copies whole.
+const HASH_WIDTH: usize = 20;
+
+/// The gap between the inline-hash cell and the vtime cell.
+const HASH_GAP: usize = 2;
+
 /// Long opaque values (container ids, image digests) are truncated to this
 /// many columns in one-line key=value renderings; `--detail` and `--json`
 /// carry the full value.
@@ -120,6 +128,8 @@ const SOURCE_TRUNCATE_WIDTH: usize = 40;
 struct Block<'a> {
     out: &'a mut String,
     detail: bool,
+    /// The columns before the vtime cell: the inline-hash cell, or none.
+    lead: usize,
     headline_done: bool,
 }
 
@@ -137,7 +147,7 @@ impl Block<'_> {
     /// How far a detail line indents to sit under the source column. The
     /// vtime cell is narrower in the default depth, so this follows it.
     fn indent(&self) -> usize {
-        vtime_width(self.detail) + VTIME_GAP
+        self.lead + vtime_width(self.detail) + VTIME_GAP
     }
 
     /// One dim detail line under the headline.
@@ -452,6 +462,9 @@ fn render_source(entry: &Value, detail: bool) -> String {
 /// separation included, no trailing newline.
 pub(crate) struct EventStreamRenderer {
     detail: bool,
+    /// Print each event's input hash at the start of its line, and no
+    /// `moment` dividers or blank lines.
+    inline_hash: bool,
     /// The previous event's input hash; `Some` also means at least one block
     /// was written, so the next divider needs a blank line above it.
     last_input_hash: Option<String>,
@@ -461,7 +474,17 @@ impl EventStreamRenderer {
     pub(crate) fn new(detail: bool) -> Self {
         Self {
             detail,
+            inline_hash: false,
             last_input_hash: None,
+        }
+    }
+
+    /// A renderer that prints each event as `HASH  VTIME  [source] payload`,
+    /// with no `moment` dividers.
+    pub(crate) fn with_inline_hash(detail: bool) -> Self {
+        Self {
+            inline_hash: true,
+            ..Self::new(detail)
         }
     }
 
@@ -505,7 +528,15 @@ impl EventStreamRenderer {
         // and the cell below has to say so rather than print server text.
         let vtime = VTime::from_json(&entry["moment"]["vtime"]);
 
-        if self.last_input_hash.as_deref() != Some(hash) {
+        if self.inline_hash {
+            write!(
+                out,
+                "{}{:gap$}",
+                style(format_args!("{:<HASH_WIDTH$}", sanitize(hash))).yellow(),
+                "",
+                gap = HASH_GAP,
+            )?;
+        } else if self.last_input_hash.as_deref() != Some(hash) {
             if self.last_input_hash.is_some() {
                 out.push('\n');
             }
@@ -534,6 +565,11 @@ impl EventStreamRenderer {
         let mut block = Block {
             out,
             detail: self.detail,
+            lead: if self.inline_hash {
+                HASH_WIDTH + HASH_GAP
+            } else {
+                0
+            },
             headline_done: false,
         };
         render_payload(entry, &mut block)?;
@@ -576,6 +612,44 @@ mod tests {
     use super::testkit::*;
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn inline_hash_starts_each_event_line_and_prints_no_divider() {
+        console::set_colors_enabled(false);
+        let mut r = EventStreamRenderer::with_inline_hash(false);
+        let entry = |hash: &str, vtime: &str| {
+            json!({
+                "moment": {"input_hash": hash, "vtime": vtime},
+                "source": {"container": "app", "name": "app", "stream": "out"},
+                "output_text": "hi"
+            })
+        };
+        assert_eq!(
+            r.render_entry(&entry("-2683787504436275581", "311.8487535319291")),
+            "-2683787504436275581  311.8487  [app] hi"
+        );
+        assert_eq!(
+            r.render_entry(&entry("456", "313.5")),
+            "456                   313.5     [app] hi"
+        );
+    }
+
+    #[test]
+    fn inline_hash_indents_detail_lines_under_the_source() {
+        console::set_colors_enabled(false);
+        let block = EventStreamRenderer::with_inline_hash(true).render_entry(&json!({
+            "moment": {"input_hash": "-1", "vtime": "2.0"},
+            "source": {"container": "app", "name": "app", "stream": "out"},
+            "antithesis_assert": {
+                "assert_type": "always", "display_type": "Always",
+                "hit": true, "condition": true, "message": "m",
+                "location": {"file": "a.rs", "function": "f", "begin_line": 3}
+            }
+        }));
+        // 20 hash columns, a 2-column gap, an 18-column vtime and a 2-column gap.
+        let location = block.lines().nth(1).unwrap();
+        assert_eq!(location, format!("{:42}@ a.rs:f:3", ""), "got: {block}");
+    }
 
     #[test]
     fn prints_a_divider_each_time_the_input_hash_changes() {

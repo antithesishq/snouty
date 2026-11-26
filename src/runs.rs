@@ -45,6 +45,10 @@ mod run_stream;
 use event_search::EventOutput;
 use ready::{Needs, RetryDecision, RetryPolicy};
 
+/// The hidden switch for the inline-hash prototype of `runs events` and
+/// `runs search`.
+const EVENTS_INLINE_HASH_VAR_NAME: &str = "SNOUTY_EVENTS_INLINE_HASH";
+
 /// Print `note` to stderr under a limited command's output.
 ///
 /// It only applies when the server filled `limit`. Fewer rows than asked for
@@ -162,7 +166,16 @@ pub async fn cmd_runs(
             annotate_faults: !raw && matches!(&command, Some(RunsCommands::Logs { .. })),
         }
     } else {
-        EventOutput::Text { detail }
+        // Prototype: SNOUTY_EVENTS_INLINE_HASH puts each event's input hash on
+        // its own line in `runs events` and `runs search`, with no dividers.
+        let inline_hash = matches!(
+            &command,
+            Some(RunsCommands::Events { .. } | RunsCommands::Search(_))
+        ) && std::env::var_os(EVENTS_INLINE_HASH_VAR_NAME).is_some();
+        EventOutput::Text {
+            detail,
+            inline_hash,
+        }
     };
 
     match command {
@@ -229,7 +242,10 @@ pub async fn cmd_runs(
                     annotate_faults: false,
                 }
             } else {
-                EventOutput::Text { detail: false }
+                EventOutput::Text {
+                    detail: false,
+                    inline_hash: false,
+                }
             };
             cmd_runs_build_logs(&run_id, settings, output.verbose, mode).await
         }
@@ -2262,7 +2278,7 @@ async fn exec_when_ready(
     let timeout = exec.timeout;
     let (json, detail) = match mode {
         EventOutput::Json { .. } => (true, false),
-        EventOutput::Text { detail } => (false, detail),
+        EventOutput::Text { detail, .. } => (false, detail),
     };
     let mut renderer =
         matches!(exec.output, ExecOutput::Events { .. }).then(|| EventStreamRenderer::new(detail));

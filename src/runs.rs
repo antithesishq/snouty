@@ -45,7 +45,7 @@ mod run_stream;
 use event_search::EventOutput;
 use ready::{Needs, RetryDecision, RetryPolicy};
 
-/// The note a limited command prints to stderr under its output. The command
+/// The note that `runs list` prints to stderr under its output. The command
 /// asks the server for at most `limit` rows and cannot tell whether more
 /// match, so the note names the limit instead of a truncation.
 ///
@@ -54,7 +54,7 @@ use ready::{Needs, RetryDecision, RetryPolicy};
 /// rows that do not exist, so `shown` below `limit` prints nothing. Callers
 /// print it in text mode only. `blank_line_before` sets the note apart from
 /// output whose blocks are separated by blank lines.
-fn limit_note(shown: usize, limit: NonZeroU64, noun: &str, blank_line_before: bool) {
+fn limit_note(shown: usize, limit: NonZeroU64, blank_line_before: bool) {
     if (shown as u64) < limit.get() {
         return;
     }
@@ -64,7 +64,7 @@ fn limit_note(shown: usize, limit: NonZeroU64, noun: &str, blank_line_before: bo
     eprintln!(
         "{}",
         wrap_if_tty(&format!(
-            "Showing up to {limit} {noun}. Additional {noun} may be available."
+            "Showing up to {limit} results. Additional results may be available."
         ))
     );
 }
@@ -76,7 +76,8 @@ fn limit_note(shown: usize, limit: NonZeroU64, noun: &str, blank_line_before: bo
 ///
 /// Commentary goes to stderr and only in text mode: under `--json` the rows
 /// are the whole answer. An empty stream gets `empty_message`. A stream that
-/// filled its `limit` gets the limit note, and any other stream gets an end
+/// filled its `limit` gets a note that the events are a random sample, because
+/// the server samples moments at random, and any other stream gets an end
 /// marker, so a quiet stream doesn't read as one cut short. Either one is set
 /// apart by a blank line because the text rendering separates its moment
 /// blocks with blank lines.
@@ -101,10 +102,18 @@ async fn print_event_lines(
         eprintln!("{empty_message}");
         return Ok(());
     }
-    // A filled limit means more rows may exist, so the limit note replaces
+    // A filled limit means more rows may exist, so the sample note replaces
     // the end marker.
     match limit {
-        Some(limit) if seen as u64 >= limit.get() => limit_note(seen, limit, "results", true),
+        Some(limit) if seen as u64 >= limit.get() => {
+            let noun = if limit.get() == 1 { "event" } else { "events" };
+            eprintln!(
+                "\n{}",
+                wrap_if_tty(&format!(
+                    "Showing a random sample of {limit} matching {noun}."
+                ))
+            );
+        }
         _ => eprintln!("\n— end of stream"),
     }
     Ok(())
@@ -362,7 +371,7 @@ async fn cmd_runs_list(
         let width = terminal_width();
         outln!("{}", render_runs_table(&runs, width))?;
     }
-    limit_note(runs.len(), args.limit, "results", args.detail);
+    limit_note(runs.len(), args.limit, args.detail);
     Ok(())
 }
 

@@ -101,12 +101,15 @@ class TerminalCapture(unittest.TestCase):
 
     def test_limit_note_is_checked_in_the_merged_terminal_output(self):
         result = self.snouty.run(
-            ["-c", "import os; os.write(2, b'Showing up to 2 results.\\n')"]
+            [
+                "-c",
+                "import os; os.write(2, b'Showing a random sample of 2 matching events.\\n')",
+            ]
         )
         story = next(
             s
             for s in gallery.build_stories(gallery.Discovery())
-            if s.slug == "runs-list--limit"
+            if s.slug == "runs-search-limit"
         )
         run = gallery.StoryRun(story, result, [{}, {}])
         self.assertTrue(

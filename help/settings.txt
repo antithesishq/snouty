@@ -36,7 +36,7 @@ For example:
 
 For each command, snouty uses the first credential that it finds: ANTITHESIS_API_KEY, then the keychain entry, then credentials.toml, then a GitHub Actions OIDC token. Keep credentials.toml readable only by you (mode 0600).
 
-snouty can rewrite settings.toml and credentials.toml, for example in `{{ t("snouty login")? }}`. A rewrite removes comments and can change the order of keys, and in credentials.toml removes keys that snouty does not know. When credentials.toml does not parse, snouty renames it to credentials.toml.bak and writes a new file that holds only the new credential.
+snouty can rewrite settings.toml and credentials.toml, for example in `{{ t("snouty login")? }}`. A rewrite removes comments and can change the order of keys. When credentials.toml does not parse, snouty renames it to credentials.toml.bak and writes a new file that holds only the new credential.
 
 Examples:
   {{ t("snouty settings show")? }}

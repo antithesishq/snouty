@@ -63,10 +63,9 @@ GitHub Actions OIDC token. Keep credentials.toml readable only by you (mode
 0600).
 
 snouty can rewrite settings.toml and credentials.toml, for example in
-`snouty login`. A rewrite removes comments and can change the order of keys, and
-in credentials.toml removes keys that snouty does not know. When
-credentials.toml does not parse, snouty renames it to credentials.toml.bak and
-writes a new file that holds only the new credential.
+`snouty login`. A rewrite removes comments and can change the order of keys.
+When credentials.toml does not parse, snouty renames it to credentials.toml.bak
+and writes a new file that holds only the new credential.
 
 Examples:
   snouty settings show

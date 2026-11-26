@@ -72,8 +72,6 @@ file ~/.config/snouty/settings.toml 'registry = "registry.example.com/old-flag"'
 # Without a credential, login fails before it saves anything.
 isolate-home no_credential
 env ANTITHESIS_API_KEY=
-env ANTITHESIS_USERNAME=
-env ANTITHESIS_PASSWORD=
 ! snouty login --tenant spec-tenant
 stderr -literal 'set ANTITHESIS_API_KEY, or run `snouty login` in a terminal'
 ! exists no_credential/.config/snouty/settings.toml
@@ -240,8 +238,6 @@ isolate-home stored_rejected
 substitute ~/.config/snouty/credentials.toml
 mock-server 401 ''
 env ANTITHESIS_API_KEY=
-env ANTITHESIS_USERNAME=
-env ANTITHESIS_PASSWORD=
 ! snouty --profile staging login --tenant spec-tenant
 stderr 'did not accept the credential'
 stderr -literal 'set ANTITHESIS_API_KEY, or run `snouty login --profile staging` in a terminal'
@@ -252,8 +248,6 @@ stderr -literal 'set ANTITHESIS_API_KEY, or run `snouty login --profile staging`
 # hold the token.
 mock-runs-server
 env ANTITHESIS_API_KEY=
-env ANTITHESIS_USERNAME=
-env ANTITHESIS_PASSWORD=
 isolate-home oidc_rejected
 set-env GITHUB_ACTIONS true
 set-env ACTIONS_ID_TOKEN_REQUEST_URL ${ANTITHESIS_BASE_URL}/github-actions/token?api-version=2.0
@@ -271,7 +265,7 @@ set-env ACTIONS_ID_TOKEN_REQUEST_TOKEN wrong-request-token
 ! stderr 'could not reach'
 ! stderr 'check that the'
 
-# A username and password from the environment cannot pass the check, and the
+# snouty refuses a username and password from the environment, and the
 # suggestion names the variables, because every later command reads them first.
 mock-runs-server
 env ANTITHESIS_API_KEY=
@@ -281,8 +275,8 @@ set-env ANTITHESIS_USERNAME puser
 set-env ANTITHESIS_PASSWORD ${FAKE_PASSWORD}
 isolate-home env_password
 ! snouty login --tenant spec-tenant
-stderr -literal 'unset ANTITHESIS_USERNAME and ANTITHESIS_PASSWORD'
-! stderr 'set ANTITHESIS_API_KEY'
+stderr 'snouty no longer accepts a username and password'
+stderr -literal 'unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD'
 
 # A tenant that does not report its registry answers 403 for the endpoint
 # with a valid credential. Login accepts the credential, takes --registry,
@@ -291,8 +285,6 @@ isolate-home registry_forbidden
 mock-server -release 66.0 403 '{"message":"Forbidden"}'
 set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
 env ANTITHESIS_TENANT=
-env ANTITHESIS_USERNAME=
-env ANTITHESIS_PASSWORD=
 snouty login --tenant spec-tenant --registry registry.example.com/acme
 file ~/.config/snouty/settings.toml 'registry = "registry.example.com/acme"'
 snouty login --tenant spec-tenant
@@ -305,8 +297,6 @@ isolate-home no_endpoint
 mock-server -release 67.0 404 '{"message":"Resource not found"}'
 set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
 env ANTITHESIS_TENANT=
-env ANTITHESIS_USERNAME=
-env ANTITHESIS_PASSWORD=
 ! snouty login --tenant spec-tenant
 stderr -literal 'run `snouty login --registry <registry>`'
 ! exists no_endpoint/.config/snouty/settings.toml

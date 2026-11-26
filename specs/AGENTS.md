@@ -144,10 +144,7 @@ staging tenant can stall while other searches hold its capacity. The whole run
 gets 2 retries, and a timeout after that fails the command. Each timeout shows
 the command's API requests. A request with no status did not complete.
 
-Required env in staging mode: `ANTITHESIS_TENANT` plus either
-`ANTITHESIS_API_KEY` or `ANTITHESIS_USERNAME`+`ANTITHESIS_PASSWORD`.
-The `runs` specs require `ANTITHESIS_API_KEY` (every endpoint other than
-launch only accepts API key authentication).
+Required env in staging mode: `ANTITHESIS_TENANT` and `ANTITHESIS_API_KEY`.
 `ANTITHESIS_BASE_URL` is optional (defaults to `https://<tenant>.antithesis.com`).
 The harness also forwards `ANTITHESIS_EXTRA_HEADERS` and `ANTITHESIS_HTTPS_PROXY`
 when they are set.

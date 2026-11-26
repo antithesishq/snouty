@@ -2,14 +2,12 @@
 #
 # Check environment configuration for Antithesis testing.
 
-# With nothing configured, doctor names the ways to get a credential the API
-# commands accept — it must not suggest username/password, which is legacy auth
-# (issue #145). The headline states the bare problem; the notes explain it.
+# With nothing configured, doctor names the ways to get a credential. The
+# headline states the bare problem; the notes explain it.
 ! snouty doctor
 stderr '.*No Antithesis credentials found.*'
 stderr '.*needs credentials to authenticate.*'
 stderr -literal 'run `snouty login` or set ANTITHESIS_API_KEY'
-! stderr '.*ANTITHESIS_USERNAME.*'
 
 # In a GitHub Actions job, doctor names the OIDC permission, not `snouty login`.
 env GITHUB_ACTIONS=true
@@ -47,24 +45,18 @@ stdout '.*"level": "error".*'
 stderr 'Run `snouty settings show` to see your settings'
 ! stderr 'Resolved settings'
 
-# With only username/password set, doctor reports one warning: the deprecated
-# credentials work only for launch and debug. Exported credentials still hide
-# whatever `snouty login` stores, so the next step also unsets them. (doctor
-# fails here only because no tenant is set.)
+# A username and password from the environment fails the credentials check,
+# with the step that replaces them.
 env ANTITHESIS_USERNAME=testuser
 set-env ANTITHESIS_PASSWORD ${FAKE_PASSWORD}
 ! snouty doctor
-stderr '^  ⚠ username/password for user \[testuser\] only works for `snouty launch` and `snouty debug`$'
-stderr '^      WARNING: username/password is deprecated, and `snouty runs` and other API commands refuse it$'
-stderr '^      NOTE: read from the `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD` environment variables$'
-stderr '^      NOTE: run `snouty login` to store an API key, then `unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD`$'
-! stderr 'Using password credentials'
-! stderr 'No credentials the API commands accept'
-! stderr 'run .snouty login. or set'
-# One source only, so doctor says nothing about a conflict.
-! stderr 'hides a stored credential'
+stderr '^  ✗ snouty no longer accepts a username and password'
+stderr -literal 'NOTE: `unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD`, then run `snouty login` or set ANTITHESIS_API_KEY'
 ! snouty doctor --json
-stdout '"id": "credentials",\s*"kind": "password",\s*"status": "warn"'
+stdout '"id": "credentials",\s*"status": "error"'
+! stdout '${FAKE_PASSWORD@R}'
+env ANTITHESIS_USERNAME=
+env ANTITHESIS_PASSWORD=
 
 # --- API connectivity + version check (issue #146) ---
 # Cases that fabricate a status via mock-server are [!staging]-gated: under
@@ -146,8 +138,6 @@ stderr '.*could not connect to 127.0.0.1.*'
 [!staging] isolate-home expired_oauth
 [!staging] substitute ~/.config/snouty/credentials.toml
 [!staging] env ANTITHESIS_API_KEY=
-[!staging] env ANTITHESIS_USERNAME=
-[!staging] env ANTITHESIS_PASSWORD=
 [!staging] ! snouty doctor
 [!staging] stderr '✗ .*could not be renewed'
 [!staging] stderr 'NOTE: run `snouty login`'
@@ -162,8 +152,7 @@ stderr '.*could not connect to 127.0.0.1.*'
 
 # A renewal that the tenant cannot make now says to try again later.
 [!staging] mock-server 500 ''
-[!staging] env ANTITHESIS_USERNAME=
-[!staging] env ANTITHESIS_PASSWORD=
+[!staging] env ANTITHESIS_API_KEY=
 [!staging] ! snouty doctor
 [!staging] stderr '✗ .*could not renew the sign-in'
 [!staging] stderr 'NOTE: try again later, or run `snouty login`'
@@ -184,8 +173,6 @@ stderr '.*could not connect to 127.0.0.1.*'
 # check, and doctor does not report the API as unreachable.
 isolate-home oidc_unreachable
 env ANTITHESIS_API_KEY=
-env ANTITHESIS_USERNAME=
-env ANTITHESIS_PASSWORD=
 env ANTITHESIS_TENANT=testtenant
 env ANTITHESIS_BASE_URL=http://127.0.0.1:1
 set-env ACTIONS_ID_TOKEN_REQUEST_URL http://127.0.0.1:1/token?api-version=2.0
@@ -268,93 +255,51 @@ env ACTIONS_ID_TOKEN_REQUEST_TOKEN=
 [!staging] stderr -literal 'NOTE: run `snouty login` to set it, or set ANTITHESIS_REGISTRY'
 
 # --- CLI OAuth probe ---
-# The probe needs no credentials. No API key is set, so doctor skips the API
-# check. mock-server answers every request with the same response.
-env ANTITHESIS_API_KEY=
+# The probe runs when no credential works. mock-server answers every request
+# with the same response, and sets an API key that each case clears, so doctor
+# fails the credentials check.
 
 # `port_strategy: disabled`: the tenant has OAuth, but not for the CLI.
 [!staging] mock-server 200 '{"port_strategy":"disabled"}'
-[!staging] snouty --verbose doctor
+[!staging] env ANTITHESIS_API_KEY=
+[!staging] ! snouty --verbose doctor
 [!staging] stderr '^> GET http://127\.0\.0\.1:\d+/auth/cli/config$'
 [!staging] stderr '^  ⚠ CLI OAuth login is not enabled for this tenant$'
 [!staging] stderr '^      NOTE: request that your tenant administrator enable OAuth login for the CLI$'
 
 # 403: the tenant has not enabled CLI OAuth.
 [!staging] mock-server 403 '{"message":"CLI OAuth login is not enabled for this tenant"}'
-[!staging] snouty doctor
+[!staging] env ANTITHESIS_API_KEY=
+[!staging] ! snouty doctor
 [!staging] stderr '^  ⚠ CLI OAuth login is not enabled for this tenant$'
-[!staging] snouty doctor --json
+[!staging] ! snouty doctor --json
 [!staging] stdout '"id": "oauth_configured",\s*"status": "warn"'
 
 # doctor does not warn on an answer it cannot read: it cannot tell whether
 # OAuth is enabled.
 [!staging] mock-server 200 '{"latest_api_version":"v1","release_version":"62.0"}'
-[!staging] snouty doctor
+[!staging] env ANTITHESIS_API_KEY=
+[!staging] ! snouty doctor
 [!staging] ! stderr '^  ⚠ .*OAuth'
 
-# --- conflicting credential sources (issue #292) ---
-# A credential exported in the environment hides one that `snouty login` stored
-# in the credentials file. The scan reads no network, and without an API key
-# doctor makes no API call. The OAuth probe still sends a request, so the base
-# URL points where nothing listens, and these blocks need no mock.
-isolate-home credential_conflict
+# --- stored username and password ---
+# A username and password that an older `snouty login` stored fails the
+# credentials check. The next step names the profile that holds it. The OAuth
+# probe sends a request, so the base URL points where nothing listens.
+isolate-home stored_password
 substitute ~/.config/snouty/credentials.toml
 env ANTITHESIS_BASE_URL=http://127.0.0.1:1
 env ANTITHESIS_API_KEY=
-env ANTITHESIS_USERNAME=testuser
-set-env ANTITHESIS_PASSWORD ${FAKE_PASSWORD}
 env ANTITHESIS_TENANT=testtenant
-# Doctor reports it as one check whose one next step frees the API key. It
-# doesn't also report a credential shortfall and the password, and it doesn't
-# tell the user to run `snouty login`, which they already did.
-snouty doctor
-stderr '^  ⚠ the username and password are hiding your API key$'
-stderr '^      WARNING: snouty uses the username and password from the `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD` environment variables, which `snouty runs` refuses$'
-stderr '^      NOTE: `unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD` to use the API key in the credentials file$'
-! stderr 'run .snouty login. or set'
-! stderr 'hides a stored credential'
-! stderr 'Using password credentials'
-
-snouty doctor --json
-stdout '"id": "credentials",\s*"kind": "password",\s*"status": "warn"'
-stdout '"text": "`unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD` to use the API key in the credentials file"'
-! stdout '"id": "credential_sources"'
-! stdout '"id": "basic_auth"'
-! stdout '${FAKE_API_KEY_A@R}|${FAKE_PASSWORD@R}'
-
-# A password stored in a named profile is replaced with `snouty login`, also
-# when the default profile holds an API key.
-env ANTITHESIS_USERNAME=
-env ANTITHESIS_PASSWORD=
-snouty --profile prod doctor
-stderr -literal 'run `snouty login --profile prod` to replace it with an API key'
-! stderr 'hiding your API key'
-
-# A username and password stored in the credentials file: `snouty login`
-# replaces them, so it is the only next step. A warning does not fail doctor.
-isolate-home stored_password
-substitute ~/.config/snouty/credentials.toml
-env ANTITHESIS_API_KEY=
-env ANTITHESIS_USERNAME=
-env ANTITHESIS_PASSWORD=
-env ANTITHESIS_TENANT=testtenant
-snouty doctor
-stderr '^  ⚠ username/password for user \[storeduser\] only works for `snouty launch` and `snouty debug`$'
-stderr '^      NOTE: read from the credentials file$'
-stderr '^      NOTE: run `snouty login` to replace it with an API key$'
+! snouty doctor
+stderr '^  ✗ snouty no longer accepts the stored username and password$'
+stderr -literal 'NOTE: create an API key, then run `snouty login` to replace the username and password'
 ! stderr 'unset ANTITHESIS'
-! stderr 'Using password credentials'
-
-snouty doctor --json
-stdout '"id": "credentials",\s*"kind": "password",\s*"status": "warn"'
-! stdout '"id": "basic_auth"'
+! snouty doctor --json
+stdout '"id": "credentials",\s*"status": "error"'
 ! stdout '${FAKE_PASSWORD@R}'
-
-# A bare `snouty login` writes the default profile, so for a password stored
-# under a named profile the next step names that profile.
-snouty --profile prod doctor
-stderr '^      NOTE: read from the `prod` profile of the credentials file$'
-stderr '^      NOTE: run `snouty login --profile prod` to replace it with an API key$'
+! snouty --profile prod doctor
+stderr -literal 'NOTE: create an API key, then run `snouty login --profile prod` to replace the username and password'
 
 # A credentials file snouty cannot parse sits behind the exported API key. No
 # command reads that far, so doctor reports the key it uses and stays green
@@ -363,8 +308,6 @@ stderr '^      NOTE: run `snouty login --profile prod` to replace it with an API
 isolate-home broken_credentials
 set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
 env ANTITHESIS_TENANT=testtenant
-env ANTITHESIS_USERNAME=
-env ANTITHESIS_PASSWORD=
 snouty doctor --offline
 stderr '^  ✓ API key provided$'
 ! stderr '(?s).*credentials.toml.*'
@@ -376,8 +319,6 @@ stdout '"id": "credentials",\s*"kind": "api_key",\s*"status": "ok",\s*"message":
 isolate-home stored_oauth
 env ANTITHESIS_API_KEY=
 substitute ~/.config/snouty/credentials.toml
-env ANTITHESIS_USERNAME=
-env ANTITHESIS_PASSWORD=
 snouty doctor --offline
 stderr '^  ✓ OAuth credentials used$'
 stderr '^      NOTE: read from the credentials file$'
@@ -421,8 +362,6 @@ env ACTIONS_ID_TOKEN_REQUEST_TOKEN=
 # write it, fails doctor: it cannot authenticate.
 isolate-home empty_api_key
 env ANTITHESIS_API_KEY=
-env ANTITHESIS_USERNAME=
-env ANTITHESIS_PASSWORD=
 env ANTITHESIS_TENANT=testtenant
 ! snouty doctor --offline
 stderr '^  ✗ the API key is empty$'
@@ -433,11 +372,9 @@ stdout '"id": "credentials",\s*"kind": "api_key",\s*"status": "error"'
 
 # Doctor does not offer an empty key as a source to fall back on, because an
 # empty key cannot authenticate.
-env ANTITHESIS_USERNAME=envuser
-set-env ANTITHESIS_PASSWORD ${FAKE_PASSWORD}
+set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
 snouty doctor --offline
-stderr '^  ⚠ username/password for user \[envuser\] only works for `snouty launch` and `snouty debug`$'
-! stderr 'hiding your API key'
+stderr '^  ✓ API key provided$'
 ! stderr 'hides a stored credential'
 
 # An explicit `docker` engine that is podman (podman-docker) fails: the user
@@ -491,16 +428,6 @@ registry = "proxy.example.com/testtenant"
 -- base_url.toml --
 [profile.proxied]
 base_url = "${BASE_URL}"
--- credential_conflict/.config/snouty/credentials.toml --
-[default]
-type = "ApiKey"
-api_key = "${FAKE_API_KEY_A}"
-
-[profile.prod]
-type = "Password"
-username = "prod-user"
-password = "${FAKE_PASSWORD}"
-
 -- stored_password/.config/snouty/credentials.toml --
 [default]
 type = "Password"

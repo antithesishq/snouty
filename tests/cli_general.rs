@@ -576,6 +576,7 @@ fn launch_exits_cleanly_when_stdout_closes_early() {
 /// example must pass argument parsing and the pre-flight checks.
 #[test]
 fn help_examples_pass_preflight() {
+    const MOCK_INPUT_HASH: &str = "5181922178177328213";
     let dir = tempfile::TempDir::new().unwrap();
     std::fs::create_dir(dir.path().join("config")).unwrap();
     std::fs::write(dir.path().join("config/docker-compose.yaml"), "").unwrap();
@@ -604,21 +605,24 @@ fn help_examples_pass_preflight() {
             while let Some(head) = example.strip_suffix('\\') {
                 example = format!("{head} {}", lines.next().unwrap().trim());
             }
-            // A `|` pipes into a command that is not snouty.
+            // A `|` pipes into a command that is not snouty. `debug` looks up
+            // the run and the input hash, so they name a moment of the mock.
             let example = example
                 .split('|')
                 .next()
                 .unwrap()
+                .replace("9043254f65c9c65d63fe043a0abfc7fc-53-1", "run-1")
                 .replace("<run_id>", "run-1")
-                .replace("<hash>", "1")
+                .replace("6057726200491963783", MOCK_INPUT_HASH)
+                .replace("<hash>", MOCK_INPUT_HASH)
                 .replace("<vtime>", "1");
             count += 1;
 
             let args = shlex::split(&example).unwrap();
-            let mock_url = start_mock_server(r#"{"runId":"run-123"}"#, 200);
+            let mock = start_runs_server(false);
             // The failing podman stops a --config launch after the pre-flight
             // checks, before it builds an image.
-            let output = snouty_with_mock(&mock_url)
+            let output = snouty_with_mock_server(&mock)
                 .current_dir(dir.path())
                 .env("ANTITHESIS_REGISTRY", "registry.example.com/repo")
                 .env(snouty::settings::CONTAINER_ENGINE_VAR_NAME, "podman")

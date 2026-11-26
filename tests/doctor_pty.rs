@@ -28,7 +28,7 @@ fn long_notes_wrap_under_their_text() {
         .env("TERM", "xterm-256color")
         .env("ANTITHESIS_TENANT", "pty-tenant")
         .env("ANTITHESIS_REGISTRY", "pty-registry")
-        // Username/password credentials draw the long deprecation warning.
+        // A username and password draw a long error and a long note.
         .env("ANTITHESIS_USERNAME", "pty-user")
         .env(
             "ANTITHESIS_PASSWORD",
@@ -50,36 +50,27 @@ fn long_notes_wrap_under_their_text() {
             "line wider than the terminal: {line:?}\n{screen}"
         );
     }
-    let warning = lines
+    let note = lines
         .iter()
-        .position(|line| line.contains("WARNING: username/password is deprecated"))
-        .unwrap_or_else(|| panic!("no deprecation warning in:\n{screen}"));
-    // `      WARNING: ` is 15 columns: the continuation starts under the text.
-    let hang = " ".repeat(15);
-    let continuation = lines[warning + 1];
+        .position(|line| line.starts_with("      NOTE: "))
+        .unwrap_or_else(|| panic!("no note in:\n{screen}"));
+    // `      NOTE: ` is 12 columns: the continuation starts under the text.
+    let hang = " ".repeat(12);
+    let continuation = lines[note + 1];
     assert!(
         continuation.starts_with(&hang) && !continuation[hang.len()..].starts_with(' '),
         "continuation not hung under the text: {continuation:?}\n{screen}"
     );
+    // A command in backticks is one word, so a person can copy it.
     assert!(
-        screen.contains("commands refuse it"),
-        "a word was split across lines:\n{screen}"
-    );
-    // A command in backticks is one word: the note's unset command moves whole
-    // to its own line, hung under `      NOTE: `, so a person can copy it.
-    let unset = format!(
-        "{}`unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD`",
-        " ".repeat(12)
-    );
-    assert!(
-        lines.iter().any(|line| line.trim_end() == unset),
+        screen.contains("`unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD`"),
         "the unset command was split across lines:\n{screen}"
     );
     // The headline is also too long for the terminal, and wraps the same way
-    // after its `  ⚠ ` prefix.
+    // after its `  ✗ ` prefix.
     let headline = lines
         .iter()
-        .position(|line| line.contains("⚠ username/password for user [pty-user]"))
+        .position(|line| line.contains("✗ snouty no longer accepts a username and password"))
         .unwrap_or_else(|| panic!("no password headline in:\n{screen}"));
     let continuation = lines[headline + 1];
     assert!(

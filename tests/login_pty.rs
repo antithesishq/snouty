@@ -26,7 +26,7 @@ use std::time::Duration;
 use expectrl::Expect;
 use expectrl::process::unix::WaitStatus;
 use expectrl::session::OsSession;
-use snouty::testutils::fake_secrets::{FAKE_API_KEY_A, FAKE_API_KEY_B, FAKE_PASSWORD};
+use snouty::testutils::fake_secrets::{FAKE_API_KEY_A, FAKE_API_KEY_B};
 use snouty::testutils::{
     LoginBackend, MockAnswer, api_key_credentials, api_key_line, oauth_credentials,
     password_credentials,
@@ -345,8 +345,8 @@ fn bare_enter_without_a_stored_key_asks_again() {
 }
 
 /// A bare Enter does not replace a stored username and password with an empty
-/// key: the prompt refuses it, and Esc then keeps the password. The password
-/// cannot sign in, so the login fails.
+/// key: the prompt refuses it, and Esc then keeps the password. snouty refuses
+/// the password, so the login fails.
 #[test]
 fn bare_enter_keeps_a_stored_password() {
     let (home, mut session) = start_login_with(&[(CREDENTIALS_FILE, &password_credentials())]);
@@ -399,14 +399,14 @@ fn a_different_api_key_asks_before_it_replaces_the_stored_key() {
     assert!(creds.contains(&api_key_line(FAKE_API_KEY_B)), "{creds}");
 }
 
-/// A new API key that overwrites a stored username and password, without a
-/// question, says so in the summary, because a script that still uses the
-/// password will no longer work.
+/// A summary line longer than the PTY wraps at word boundaries.
 #[test]
-fn an_api_key_that_replaces_a_stored_password_says_so() {
-    let (home, mut session) = start_login_with(&[(CREDENTIALS_FILE, &password_credentials())]);
+fn a_long_summary_line_wraps() {
+    let (home, mut session) = start_login_with(&[(CREDENTIALS_FILE, &oauth_credentials(None))]);
     expect(&mut session, "Please enter your API Key");
     send(&mut session, &format!("{FAKE_API_KEY_A}\r"));
+    expect(&mut session, "Replace your stored OAuth credentials?");
+    send(&mut session, "y\r");
     let seen = finish(session);
 
     // This line is longer than the PTY, so snouty wraps it.
@@ -430,30 +430,11 @@ fn an_api_key_that_replaces_a_stored_password_says_so() {
     assert!(
         lines[start..=end]
             .join(" ")
-            .ends_with("in the credentials file, replacing your stored username and password."),
+            .ends_with("in the credentials file, replacing your stored OAuth credentials."),
         "the credentials line is split mid-word: {seen}"
     );
     let creds = credentials(home.path());
     assert!(creds.contains(&api_key_line(FAKE_API_KEY_A)), "{creds}");
-}
-
-/// A username and password from the environment is still there after login,
-/// so the summary does not claim to replace it.
-#[test]
-fn an_api_key_does_not_claim_to_replace_a_password_from_the_environment() {
-    let (_home, mut session) = spawn_login(&Login {
-        env: &[
-            ("ANTITHESIS_USERNAME", "puser"),
-            ("ANTITHESIS_PASSWORD", FAKE_PASSWORD),
-        ],
-        ..Login::default()
-    });
-    expect(&mut session, "Please enter your API Key");
-    send(&mut session, &format!("{FAKE_API_KEY_A}\r"));
-    let seen = finish(session);
-
-    assert!(seen.contains("Stored your API key in"), "{seen}");
-    assert!(!seen.contains("replacing"), "{seen}");
 }
 
 /// With stdout redirected and stderr on a terminal, the summary keeps whole
@@ -461,12 +442,14 @@ fn an_api_key_does_not_claim_to_replace_a_password_from_the_environment() {
 #[test]
 fn a_redirected_summary_keeps_whole_lines() {
     let (home, mut session) = spawn_login(&Login {
-        seed: &[(CREDENTIALS_FILE, &password_credentials())],
+        seed: &[(CREDENTIALS_FILE, &oauth_credentials(None))],
         stdout: Stdout::File,
         ..Login::default()
     });
     expect(&mut session, "Please enter your API Key");
     send(&mut session, &format!("{FAKE_API_KEY_A}\r"));
+    expect(&mut session, "Replace your stored OAuth credentials?");
+    send(&mut session, "y\r");
     // Read the PTY to its end before the wait: on macOS a child cannot exit
     // while its terminal output is unread.
     Expect::expect(&mut session, expectrl::Eof).expect("read the PTY to its end");
@@ -483,7 +466,7 @@ fn a_redirected_summary_keeps_whole_lines() {
             .lines()
             .any(|line| line.starts_with("Stored your API key in ")
                 && line.ends_with(
-                    "in the credentials file, replacing your stored username and password."
+                    "in the credentials file, replacing your stored OAuth credentials."
                 )),
         "{summary}"
     );

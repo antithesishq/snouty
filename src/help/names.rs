@@ -231,9 +231,9 @@ mod tests {
         let call = t(
             HelpPage::RunsLogs,
             Reader::Mcp,
-            "snouty runs logs --profile prod <run_id> <hash>",
+            "snouty runs logs --settings s.toml <run_id> <hash>",
         );
-        assert!(call.is_err_and(|err| err.contains("profile is not a param")));
+        assert!(call.is_err_and(|err| err.contains("settings is not a param")));
     }
 
     #[test]

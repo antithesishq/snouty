@@ -15,8 +15,7 @@ Commands:
   version            Print version information
   update             Check for and install updates
   docs               Search Antithesis documentation
-  settings           Show snouty's settings, and trust or deny a project
-                     settings file
+  settings           Show snouty's settings
   login              Sign in and store your snouty configuration
   docker-credential  Give Docker or Podman the credential for the tenant's
                      container registry
@@ -31,7 +30,5 @@ Options:
                              commands, pretty JSON otherwise)
       --verbose              Log API requests to stderr (authentication tokens
                              redacted)
-      --settings <SETTINGS>  Path to the snouty settings file (default:
-                             ./.snouty.toml; overrides SNOUTY_SETTINGS_PATH)
-      --profile <PROFILE>    Settings profile to select (overrides
-                             ANTITHESIS_PROFILE)
+      --settings <SETTINGS>  Path to a settings file that overrides the global
+                             settings file (overrides SNOUTY_SETTINGS_PATH)

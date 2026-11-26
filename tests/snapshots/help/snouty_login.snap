@@ -4,11 +4,11 @@ source: tests/help_snapshots.rs
 Sign in and store your snouty configuration
 
 Sign in to your tenant, then save the tenant and its container registry in the
-global snouty settings file and store your credential, optionally under a named
-profile. Login checks the credential with the tenant, and saves nothing when the
-tenant rejects it. Information not provided via args is asked for at the
-terminal. Without a terminal, login checks the credential that other commands
-use, such as ANTITHESIS_API_KEY, and stores no credential.
+global snouty settings file and store your credential. Login checks the
+credential with the tenant, and saves nothing when the tenant rejects it.
+Information not provided via args is asked for at the terminal. Without a
+terminal, login checks the credential that other commands use, such as
+ANTITHESIS_API_KEY, and stores no credential.
 
 Usually login saves the registry that your tenant reports,
 `registry.<tenant>.antithesis.com`, and you do not need --registry. When another
@@ -22,15 +22,14 @@ Antithesis. If you are not sure, contact Antithesis support. Then sign in to
 that registry with `docker login` or `podman login`.
 
 NOTE: `snouty login` will offer to reuse your existing configuration values,
-including any sourced from a local .snouty.toml file or the file specified by
---settings or via the SNOUTY_SETTINGS_PATH environment variable. However, snouty
-login will save the specified configuration and credentials to the "global"
-files in your home directory.
+including any sourced from the file specified by --settings or via the
+SNOUTY_SETTINGS_PATH environment variable. However, snouty login will save the
+specified configuration and credentials to the "global" files in your home
+directory.
 
 Examples:
   snouty login
   snouty login --tenant "mytenant" --registry "registry.example.com/team"
-  snouty login --profile "profile"
 
 Usage: snouty login [OPTIONS]
 
@@ -53,8 +52,5 @@ Options:
           Log API requests to stderr (authentication tokens redacted)
 
       --settings <SETTINGS>
-          Path to the snouty settings file (default: ./.snouty.toml; overrides
-          SNOUTY_SETTINGS_PATH)
-
-      --profile <PROFILE>
-          Settings profile to select (overrides ANTITHESIS_PROFILE)
+          Path to a settings file that overrides the global settings file
+          (overrides SNOUTY_SETTINGS_PATH)

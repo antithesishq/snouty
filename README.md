@@ -143,7 +143,7 @@ These environment variables have no settings key:
 | `ANTITHESIS_API_KEY`                         | Your API key. It takes precedence over a credential that `snouty login` stored.                                 |
 | `ANTITHESIS_GITHUB_TOKEN`                    | A GitHub token that can write commit statuses. Used by `snouty launch` to update the commit status with the Run results. |
 | `ANTITHESIS_EXTRA_HEADERS`                   | Headers to add to every API request, one `Name: value` pair per line. For example, `X-Proxy-Token: abc123` for a proxy that expects its own header. |
-| `SNOUTY_SETTINGS_PATH`                       | A settings file to use in place of `./.snouty.toml`. The file must exist.                                       |
+| `SNOUTY_SETTINGS_PATH`                       | A settings file that overrides the global settings file. The file must exist.                                  |
 | `SNOUTY_DISABLE_KEYCHAIN_CREDENTIAL_STORAGE` | On macOS, set to `1` to store credentials in a file, not in the keychain.                                        |
 
 ### Docker credential helper

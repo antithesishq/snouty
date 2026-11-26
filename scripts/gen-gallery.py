@@ -2005,7 +2005,7 @@ def rows_at_most_with_run_cells(limit: int):
     return chk
 
 
-def rows_at_most_with_limit_note(limit: int):
+def rows_at_most_with_sample_note(limit: int):
     """`rows_at_most`, plus the note that the events are a random sample.
 
     The note claims more events may match, so it belongs only when the server
@@ -3305,7 +3305,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
                 "-n",
                 "3",
             ],
-            rows_at_most_with_limit_note(3),
+            rows_at_most_with_sample_note(3),
         ),
         Story(
             "runs-search-no-results",

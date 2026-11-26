@@ -29,8 +29,8 @@ use crate::event_render::{EventStreamRenderer, normalize_terminal_text, strip_an
 use crate::event_set_dsl;
 use crate::ndjson::JsonStream;
 use crate::render::{
-    CodeSpans, OutputOptions, indent_lines, render_kv, sanitize, sanitize_multiline, shell_command,
-    wrap_if_tty, wrap_text,
+    CodeSpans, OutputOptions, count, indent_lines, render_kv, sanitize, sanitize_multiline,
+    shell_command, wrap_if_tty, wrap_text,
 };
 use crate::settings::Settings;
 use crate::stdio;
@@ -45,28 +45,23 @@ mod run_stream;
 use event_search::EventOutput;
 use ready::{Needs, RetryDecision, RetryPolicy};
 
-/// The note that `runs list` prints to stderr under its output. The command
-/// asks the server for at most `limit` rows and cannot tell whether more
-/// match, so the note names the limit instead of a truncation.
+/// Print `note` to stderr under a limited command's output. The command asks
+/// the server for at most `limit` rows and cannot tell whether more match, so
+/// the note describes the limit instead of a truncation.
 ///
 /// It only applies when the server filled the limit. Fewer rows than asked for
 /// means the result set is exhausted, and the note would send the user back for
 /// rows that do not exist, so `shown` below `limit` prints nothing. Callers
 /// print it in text mode only. `blank_line_before` sets the note apart from
 /// output whose blocks are separated by blank lines.
-fn limit_note(shown: usize, limit: NonZeroU64, blank_line_before: bool) {
+fn limit_note(shown: usize, limit: NonZeroU64, blank_line_before: bool, note: &str) {
     if (shown as u64) < limit.get() {
         return;
     }
     if blank_line_before {
         eprintln!();
     }
-    eprintln!(
-        "{}",
-        wrap_if_tty(&format!(
-            "Showing up to {limit} results. Additional results may be available."
-        ))
-    );
+    eprintln!("{}", wrap_if_tty(note));
 }
 
 /// Print a rendered event stream, then the text-mode commentary under it.
@@ -102,18 +97,16 @@ async fn print_event_lines(
         eprintln!("{empty_message}");
         return Ok(());
     }
-    // A filled limit means more rows may exist, so the sample note replaces
-    // the end marker.
     match limit {
-        Some(limit) if seen as u64 >= limit.get() => {
-            let noun = if limit.get() == 1 { "event" } else { "events" };
-            eprintln!(
-                "\n{}",
-                wrap_if_tty(&format!(
-                    "Showing a random sample of {limit} matching {noun}."
-                ))
-            );
-        }
+        Some(limit) if seen as u64 >= limit.get() => limit_note(
+            seen,
+            limit,
+            true,
+            &format!(
+                "Showing a random sample of {}.",
+                count(limit.get(), "matching event")
+            ),
+        ),
         _ => eprintln!("\n— end of stream"),
     }
     Ok(())
@@ -371,7 +364,15 @@ async fn cmd_runs_list(
         let width = terminal_width();
         outln!("{}", render_runs_table(&runs, width))?;
     }
-    limit_note(runs.len(), args.limit, args.detail);
+    limit_note(
+        runs.len(),
+        args.limit,
+        args.detail,
+        &format!(
+            "Showing up to {} results. Additional results may be available.",
+            args.limit
+        ),
+    );
     Ok(())
 }
 

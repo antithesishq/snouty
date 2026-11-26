@@ -99,7 +99,7 @@ class TerminalCapture(unittest.TestCase):
         self.assertEqual(result.stderr, "diagnostic\n")
         self.assertIsNone(result.cast)
 
-    def test_limit_note_is_checked_in_the_merged_terminal_output(self):
+    def test_sample_note_is_checked_in_the_merged_terminal_output(self):
         result = self.snouty.run(
             [
                 "-c",
@@ -113,7 +113,7 @@ class TerminalCapture(unittest.TestCase):
         )
         run = gallery.StoryRun(story, result, [{}, {}])
         self.assertTrue(
-            gallery.rows_at_most_with_limit_note(2)(run, gallery.Registry())[0]
+            gallery.rows_at_most_with_sample_note(2)(run, gallery.Registry())[0]
         )
 
     def test_stalled_dialogue_fails_and_closes_the_child(self):

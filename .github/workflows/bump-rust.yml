@@ -83,7 +83,7 @@ jobs:
           fi
           title="Bump Rust to $VERSION, and rust-overlay with it"
           body="Pins the toolchain to Rust $VERSION, the newest stable release in the updated rust-overlay pin. \`rust-version\` is $MSRV."
-          if ! git diff --quiet Cargo.toml; then
+          if ! git diff --quiet HEAD -- Cargo.toml; then
             body+=" It rises because clippy, told it may use Rust $VERSION, simplified the code, and $MSRV is the oldest Rust that builds the result."
           fi
           git config user.name "github-actions[bot]"

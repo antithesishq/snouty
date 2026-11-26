@@ -1,16 +1,13 @@
 #!/usr/bin/env bash
 # Usage: scripts/bump-rust.sh VERSION
 #
-# Pins rust-toolchain.toml to VERSION, a stable release such as 1.101.0, and
-# raises `rust-version` in Cargo.toml only when that pays for itself. Clippy
-# applies its fixes as if `rust-version` were VERSION, so it uses any std API
-# or language feature that a newer Rust brings. When it changes code,
-# cargo-msrv finds the lowest Rust that builds the result, and that becomes the
-# new `rust-version`. Otherwise `rust-version` stays where it is, so builders
-# on an older Rust, such as nixpkgs, are not cut off for nothing.
+# Pins rust-toolchain.toml to VERSION, a stable release such as 1.101.0.
+# Raises `rust-version` in Cargo.toml only when clippy, allowed to use VERSION,
+# changes code, and then sets it to the oldest Rust that builds the result.
 #
-# Needs rustup, cargo-msrv and a clean tree. bump-rust.yml runs it each week,
-# and reads the final `rust-version` from the `msrv` step output.
+# Needs rustup, cargo-msrv and a clean tree. It stages the files it changes.
+# When GITHUB_OUTPUT is set, it writes the final `rust-version` to the `msrv`
+# output.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -32,11 +29,16 @@ output_msrv() {
 sed -i "s/^channel = \".*\"$/channel = \"$version\"/" rust-toolchain.toml
 grep -qx "channel = \"$version\"" rust-toolchain.toml
 
+# The new rustfmt may restyle code on its own. Stage that, so that only
+# clippy's changes count below.
+cargo fmt --all
+git add -u
+
 set_msrv "$newest"
 cargo clippy --fix --allow-dirty --workspace --all-targets --locked
 cargo fmt --all
-# Cargo refuses a toolchain older than `rust-version`, so cargo-msrv searches
-# from the current value up.
+# Cargo refuses a toolchain older than `rust-version`, so restore the old value
+# before cargo-msrv tries older toolchains.
 set_msrv "$current"
 
 if git diff --quiet -- '*.rs'; then
@@ -49,5 +51,6 @@ floor=$(cargo msrv find --min "$current" --max "$newest" --output-format minimal
   -- cargo check --workspace --all-targets --locked)
 [[ $floor =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "unexpected cargo-msrv result: $floor" >&2; exit 1; }
 set_msrv "${floor%.*}"
+git add -u
 echo "rust-version: $current -> ${floor%.*}"
 output_msrv "${floor%.*}"

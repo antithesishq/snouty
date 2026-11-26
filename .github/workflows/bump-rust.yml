@@ -1,9 +1,10 @@
 name: bump rust
 
-# Keeps the toolchain in rust-toolchain.toml, and `rust-version` in Cargo.toml
-# with it, at the newest stable Rust that the rust-overlay pin provides. The org does not let
-# GITHUB_TOKEN open pull requests, so this pushes the `bump-rust` branch and
-# files an issue with a link that opens the pull request. A pull request that a
+# Keeps the toolchain in rust-toolchain.toml at the newest stable Rust that the
+# rust-overlay pin provides, and raises `rust-version` in Cargo.toml only when
+# the new Rust lets clippy simplify the code; scripts/bump-rust.sh says how.
+# The org does not let GITHUB_TOKEN open pull requests, so this pushes the
+# `bump-rust` branch and files an issue with a link that opens the pull request. A pull request that a
 # person opens runs CI as usual.
 on:
   schedule:
@@ -18,7 +19,7 @@ permissions: {}
 jobs:
   bump:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
     permissions:
       contents: write
       issues: write
@@ -36,19 +37,39 @@ jobs:
           npins=$(nix-build nixpkgs.nix -A npins --no-out-link)
           "$npins/bin/npins" update rust-overlay
 
-      - name: Set the toolchain and rust-version
+      - name: Read the newest stable Rust
+        id: rust
         run: |
           json=$(nix-instantiate --eval --json -E '(import ./nixpkgs.nix { }).rust-bin.stable.latest.default.version')
           version=$(jq -r . <<< "$json")
           [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "unexpected Rust version: $json" >&2; exit 1; }
-          msrv=${version%.*}
-          sed -i "s/^channel = \".*\"$/channel = \"$version\"/" rust-toolchain.toml
-          grep -qx "channel = \"$version\"" rust-toolchain.toml
-          sed -i "s/^rust-version = \".*\"$/rust-version = \"$msrv\"/" Cargo.toml
-          grep -qx "rust-version = \"$msrv\"" Cargo.toml
           echo "VERSION=$version" >> "$GITHUB_ENV"
+          sed -i "s/^channel = \".*\"$/channel = \"$version\"/" rust-toolchain.toml
+          # The overlay pin moves only with a new Rust release, so that a week
+          # with no release asks nothing of anyone.
+          if git diff --quiet rust-toolchain.toml; then
+            echo "Already on Rust $version"
+          else
+            echo "new=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      # After the toolchain line changes, so that it installs the new Rust and
+      # its clippy. The job holds a write token, so it uses no cache.
+      - if: steps.rust.outputs.new == 'true'
+        uses: ./.github/actions/setup-tools
+        with:
+          cache: "false"
+          mise-cache: "false"
+          mise-tools: github:foresterre/cargo-msrv
+
+      - name: Bump Rust, and rust-version when it simplifies the code
+        if: steps.rust.outputs.new == 'true'
+        run: |
+          scripts/bump-rust.sh "$VERSION"
+          echo "MSRV=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)" >> "$GITHUB_ENV"
 
       - name: Push the branch and file the issue
+        if: steps.rust.outputs.new == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -61,18 +82,16 @@ jobs:
             echo "A $branch pull request is already open"
             exit 0
           fi
-          # The overlay pin moves only with a new Rust release, so that a week
-          # with no release asks nothing of anyone.
-          if git diff --quiet rust-toolchain.toml; then
-            echo "Already on Rust $VERSION"
-            exit 0
-          fi
           title="Bump Rust to $VERSION, and rust-overlay with it"
-          body="Pins the toolchain to Rust $VERSION, the newest stable release in the updated rust-overlay pin, and sets \`rust-version\` to ${VERSION%.*}."
+          body="Pins the toolchain to Rust $VERSION, the newest stable release in the updated rust-overlay pin. \`rust-version\` is $MSRV."
+          if ! git diff --quiet Cargo.toml; then
+            body+=" It rises because clippy, told it may use Rust $VERSION, simplified the code, and $MSRV is the oldest Rust that builds the result."
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$branch"
-          git commit -am "$title"
+          git add -A
+          git commit -m "$title"
           git push --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$branch"
 
           # One open issue at a time: a later run updates it.

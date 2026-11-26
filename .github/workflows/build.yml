@@ -159,6 +159,47 @@ jobs:
       - name: cargo-deny advisories
         if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
         run: mise run lint:advisories
+  # Checks the workspace on the Rust that `rust-version` in Cargo.toml names,
+  # the oldest that snouty supports. Every other job builds on the newer
+  # toolchain that rust-toolchain.toml pins.
+  msrv:
+    runs-on: ubuntu-latest
+    needs: skip-check
+    if: needs.skip-check.outputs.should_skip != 'true'
+    timeout-minutes: 20
+    steps:
+      # musl-gcc compiles the aws-lc and mimalloc C sources. The test job says
+      # why the kernel.org mirror is there.
+      - name: Install musl-tools
+        run: |
+          printf 'https://mirrors.edge.kernel.org/ubuntu/\tpriority:4\n' |
+            sudo tee -a /etc/apt/apt-mirrors.txt
+          sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # RUSTUP_TOOLCHAIN overrides rust-toolchain.toml for every later step,
+      # rust-cache's key included.
+      - name: Read rust-version
+        run: echo "RUSTUP_TOOLCHAIN=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)" >> "$GITHUB_ENV"
+
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
+          targets: x86_64-unknown-linux-musl
+
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          save-if: ${{ github.event_name != 'merge_group' }}
+
+      - name: Check on the MSRV
+        run: cargo check --workspace --all-targets --locked
+
+      # The Linux release binaries are musl builds, with musl-only dependencies.
+      - name: Check on the MSRV for musl
+        run: cargo check --workspace --all-targets --locked --target x86_64-unknown-linux-musl
   test:
     runs-on: ${{ matrix.os }}
     needs: skip-check
@@ -353,6 +394,7 @@ jobs:
       - test-macos-arm
       - staging
       - lint
+      - msrv
     if: always()
     steps:
       - name: Verify every needed job

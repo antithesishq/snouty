@@ -308,14 +308,20 @@ The Python scripts share one set of dependencies, in the top-level
 `pyproject.toml` and `uv.lock`. Do not declare dependencies in a script.
 
 `rust-toolchain.toml` pins the exact Rust that CI, the release builds, nix and
-local builds use, and its minor version is the MSRV, the `rust-version` in the
-`[workspace.package]` table of `Cargo.toml`, which both crates use. Both track
-the newest stable Rust: each week, `.github/workflows/bump-rust.yml` updates the
-rust-overlay pin, sets both to the overlay's newest stable release, and, when
-that is a new release, pushes the `bump-rust` branch and files an issue with a
-link that opens its pull request. To change the Rust version by hand, change
-both lines, and update the rust-overlay pin (`npins update rust-overlay`) when
-it does not have that release yet.
+local builds use, and tracks the newest stable Rust. The MSRV, the
+`rust-version` in the `[workspace.package]` table of `Cargo.toml`, which both
+crates use, is the oldest Rust that builds snouty, and the `msrv` job in
+`build.yml` checks the workspace on it. Keep it low, because nixpkgs and other
+builders lag behind stable Rust. Each week, `.github/workflows/bump-rust.yml`
+updates the rust-overlay pin, and, when the overlay has a new stable release,
+runs `scripts/bump-rust.sh`, then pushes the `bump-rust` branch and files an
+issue with a link that opens its pull request. The script pins the new release,
+and applies clippy's fixes as if `rust-version` were that release. Only when
+that changes code does it raise `rust-version`, to the oldest Rust that builds
+the result, which `cargo msrv find` finds. To move to a new Rust by hand, run
+the script with the release, after `npins update rust-overlay` when the
+overlay does not have it yet. Do not raise `rust-version` for any other reason
+than a dependency or a feature that needs it.
 
 On a system that cannot run mise's prebuilt binaries, such as NixOS, use the
 nix shell (`nix-shell`, or direnv with `.envrc`) instead. It has the same

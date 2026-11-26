@@ -4,8 +4,8 @@ name: bump rust
 # rust-overlay pin provides, and raises `rust-version` in Cargo.toml only when
 # the new Rust lets clippy simplify the code; scripts/bump-rust.sh says how.
 # The org does not let GITHUB_TOKEN open pull requests, so this pushes the
-# `bump-rust` branch and files an issue with a link that opens the pull request. A pull request that a
-# person opens runs CI as usual.
+# `bump-rust` branch and files an issue with a link that opens the pull
+# request. A pull request that a person opens runs CI as usual.
 on:
   schedule:
     - cron: "0 8 * * 1"
@@ -44,34 +44,33 @@ jobs:
           version=$(jq -r . <<< "$json")
           [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "unexpected Rust version: $json" >&2; exit 1; }
           echo "VERSION=$version" >> "$GITHUB_ENV"
-          sed -i "s/^channel = \".*\"$/channel = \"$version\"/" rust-toolchain.toml
           # The overlay pin moves only with a new Rust release, so that a week
           # with no release asks nothing of anyone.
-          if git diff --quiet rust-toolchain.toml; then
+          if grep -qx "channel = \"$version\"" rust-toolchain.toml; then
             echo "Already on Rust $version"
           else
             echo "new=true" >> "$GITHUB_OUTPUT"
           fi
 
-      # After the toolchain line changes, so that it installs the new Rust and
-      # its clippy. The job holds a write token, so it uses no cache.
+      # The job holds a write token, so it uses no cache.
       - if: steps.rust.outputs.new == 'true'
         uses: ./.github/actions/setup-tools
         with:
+          toolchain: ${{ env.VERSION }}
           cache: "false"
           mise-cache: "false"
           mise-tools: github:foresterre/cargo-msrv
 
       - name: Bump Rust, and rust-version when it simplifies the code
+        id: bump
         if: steps.rust.outputs.new == 'true'
-        run: |
-          scripts/bump-rust.sh "$VERSION"
-          echo "MSRV=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)" >> "$GITHUB_ENV"
+        run: scripts/bump-rust.sh "$VERSION"
 
       - name: Push the branch and file the issue
         if: steps.rust.outputs.new == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
+          MSRV: ${{ steps.bump.outputs.msrv }}
         run: |
           branch=bump-rust
           # Leave an open pull request alone: a force-push would drop any fix
@@ -90,8 +89,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git switch -c "$branch"
-          git add -A
-          git commit -m "$title"
+          git commit -am "$title"
           git push --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$branch"
 
           # One open issue at a time: a later run updates it.

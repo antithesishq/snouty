@@ -167,6 +167,10 @@ jobs:
     needs: skip-check
     if: needs.skip-check.outputs.should_skip != 'true'
     timeout-minutes: 20
+    env:
+      # The Linux release binaries are musl builds, with musl-only
+      # dependencies, and nothing is gnu-only, so one musl check covers both.
+      CARGO_BUILD_TARGET: x86_64-unknown-linux-musl
     steps:
       # musl-gcc compiles the aws-lc and mimalloc C sources. The test job says
       # why the kernel.org mirror is there.
@@ -185,21 +189,14 @@ jobs:
       - name: Read rust-version
         run: echo "RUSTUP_TOOLCHAIN=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)" >> "$GITHUB_ENV"
 
-      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+      - uses: ./.github/actions/setup-tools
         with:
           toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
-          targets: x86_64-unknown-linux-musl
-
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          save-if: ${{ github.event_name != 'merge_group' }}
+          targets: ${{ env.CARGO_BUILD_TARGET }}
+          mise: "false"
 
       - name: Check on the MSRV
         run: cargo check --workspace --all-targets --locked
-
-      # The Linux release binaries are musl builds, with musl-only dependencies.
-      - name: Check on the MSRV for musl
-        run: cargo check --workspace --all-targets --locked --target x86_64-unknown-linux-musl
   test:
     runs-on: ${{ matrix.os }}
     needs: skip-check

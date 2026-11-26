@@ -5,6 +5,9 @@ description: >-
   the versions in mise.lock, which mise-action caches. Every later step finds
   the tools on PATH, from any directory. Check out the repository first.
 inputs:
+  toolchain:
+    description: The Rust toolchain to install. Empty installs the one that rust-toolchain.toml pins.
+    default: ""
   targets:
     description: Extra Rust targets to install, separated by commas.
     default: ""
@@ -13,6 +16,9 @@ inputs:
     default: ""
   cache:
     description: Set to "false" for a job that compiles nothing, or that holds a secret.
+    default: "true"
+  mise:
+    description: Set to "false" for a job that needs no mise.toml tools.
     default: "true"
   mise-tools:
     description: The mise.toml tools to install, separated by spaces. Empty installs them all.
@@ -27,7 +33,9 @@ runs:
   steps:
     - id: toolchain
       shell: bash
-      run: echo "channel=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      env:
+        TOOLCHAIN: ${{ inputs.toolchain }}
+      run: echo "channel=${TOOLCHAIN:-$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)}" >> "$GITHUB_OUTPUT"
 
     - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
       with:
@@ -41,7 +49,8 @@ runs:
         # No other run can restore a cache saved on a queue entry's branch.
         save-if: ${{ github.event_name != 'merge_group' }}
 
-    - uses: jdx/mise-action@d5574b52816a478f9d4e6529a3f6ff17a8a36785 # v5.2.8
+    - if: inputs.mise == 'true'
+      uses: jdx/mise-action@d5574b52816a478f9d4e6529a3f6ff17a8a36785 # v5.2.8
       with:
         version: "2026.10.25"
         # The SHA-256 of the mise binary of that release, per runner platform.
@@ -60,5 +69,6 @@ runs:
     # The paths are mise's install directories for the tools that mise.toml
     # pins, so they are only as trusted as the checked-out repository.
     - name: Put the mise tools on PATH
+      if: inputs.mise == 'true'
       shell: bash
       run: mise bin-paths >> "$GITHUB_PATH" # zizmor: ignore[github-env]

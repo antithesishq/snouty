@@ -9,7 +9,8 @@
 # new `rust-version`. Otherwise `rust-version` stays where it is, so builders
 # on an older Rust, such as nixpkgs, are not cut off for nothing.
 #
-# Needs rustup, cargo-msrv and a clean tree. bump-rust.yml runs it each week.
+# Needs rustup, cargo-msrv and a clean tree. bump-rust.yml runs it each week,
+# and reads the final `rust-version` from the `msrv` step output.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -24,6 +25,10 @@ set_msrv() {
   grep -qx "rust-version = \"$1\"" Cargo.toml
 }
 
+output_msrv() {
+  [[ -z ${GITHUB_OUTPUT:-} ]] || echo "msrv=$1" >> "$GITHUB_OUTPUT"
+}
+
 sed -i "s/^channel = \".*\"$/channel = \"$version\"/" rust-toolchain.toml
 grep -qx "channel = \"$version\"" rust-toolchain.toml
 
@@ -36,6 +41,7 @@ set_msrv "$current"
 
 if git diff --quiet -- '*.rs'; then
   echo "No simplification needs a newer Rust; rust-version stays $current"
+  output_msrv "$current"
   exit 0
 fi
 
@@ -44,3 +50,4 @@ floor=$(cargo msrv find --min "$current" --max "$newest" --output-format minimal
 [[ $floor =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "unexpected cargo-msrv result: $floor" >&2; exit 1; }
 set_msrv "${floor%.*}"
 echo "rust-version: $current -> ${floor%.*}"
+output_msrv "${floor%.*}"

@@ -411,8 +411,8 @@ fn authn_checks(
     checks
 }
 
-/// The check for a credential shortfall. The notes name the ways to get a
-/// credential rather than naming an API key alone.
+/// The check for a credential shortfall. Its notes name every way to get a
+/// credential.
 fn missing_credentials_check(message: impl Into<String>, github_actions: bool) -> Check {
     Check::fail(CheckId::Credentials { kind: None }, message)
         .note(

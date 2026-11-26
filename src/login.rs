@@ -509,8 +509,8 @@ async fn fetch_registry(
     let (authentication, env_next_step) =
         match new_credentials {
             Some(credentials) => (credentials.to_unrefreshable_authentication_info(), None),
-            // A read error of a stored credential passes through as it is, except
-            // a stored username and password, which login itself replaces.
+            // Login replaces a stored username and password, so that error
+            // suggests a new login.
             None => match AuthenticationInfo::find_ambient(profile).map_err(|err| {
                 match err.downcast_ref::<UnsupportedPassword>() {
                     Some(UnsupportedPassword::Stored { .. }) => {
@@ -648,7 +648,6 @@ fn replacing(stored: Option<&Tagged<AuthenticationInfo, CredentialStore>>) -> St
     stored.map_or_default(|stored| format!(", replacing your stored {}", stored.value()))
 }
 
-/// The credential kinds `snouty login` sets up.
 #[derive(Clone, Copy)]
 enum AuthSetupType {
     ApiKey,

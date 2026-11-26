@@ -182,8 +182,7 @@ stderr 'the basic_k8s_test launcher requires a config image'
 ! snouty launch --max-compute-hours 24
 stderr 'the basic_test launcher requires a config image'
 
-# The command authenticates with the Antithesis API using
-#    ANTITHESIS_API_KEY and ANTITHESIS_TENANT.
+# Without a credential, the command fails.
 ! snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 24
 stderr 'No Antithesis credentials found.*'
 

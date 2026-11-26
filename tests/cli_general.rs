@@ -606,7 +606,8 @@ fn help_examples_pass_preflight() {
                 example = format!("{head} {}", lines.next().unwrap().trim());
             }
             // A `|` pipes into a command that is not snouty. `debug` looks up
-            // the run and the input hash, so they name a moment of the mock.
+            // the run and the input hash, so the examples use ones that the
+            // runs mock knows.
             let example = example
                 .split('|')
                 .next()

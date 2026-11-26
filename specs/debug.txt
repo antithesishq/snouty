@@ -14,8 +14,7 @@
 # where the command fails. Only the credential-free check above the skip runs
 # in both modes.
 
-# The command authenticates with the Antithesis API using
-#    ANTITHESIS_API_KEY and ANTITHESIS_TENANT.
+# Without a credential, the command fails.
 ! snouty debug --input-hash abc --run-id run-123 --vtime 123
 stderr 'No Antithesis credentials found.*'
 

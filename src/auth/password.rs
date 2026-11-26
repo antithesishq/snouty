@@ -8,11 +8,11 @@ use super::login_command;
 pub(crate) const USERNAME_VAR_NAME: &str = "ANTITHESIS_USERNAME";
 pub(crate) const PASSWORD_VAR_NAME: &str = "ANTITHESIS_PASSWORD";
 
-/// Ambient credential resolution found a username and password. `snouty
-/// doctor` reads this error to report it as a credentials check.
+/// Ambient credential resolution found a username and password, which snouty
+/// refuses.
 #[derive(Debug)]
 pub(crate) enum UnsupportedPassword {
-    /// `profile` is the selected profile.
+    /// From the environment. The fix names the selected profile, `profile`.
     Environment { profile: Option<String> },
     /// An older snouty stored it for `profile`.
     Stored { profile: Option<String> },

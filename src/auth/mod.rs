@@ -134,8 +134,8 @@ pub(crate) type SourcedCredential = Tagged<AuthenticationInfo, CredentialSource>
 /// at once, and the first in resolution order then wins.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum CredentialLookup<'a> {
-    /// `profile` is the selected profile, which the fix of a username and
-    /// password names.
+    /// `profile` is the selected profile. The fix for a username and password
+    /// names it.
     Environment {
         profile: Option<&'a str>,
     },
@@ -274,9 +274,8 @@ impl AuthenticationInfo {
     }
 
     /// The first stored credential that every command would use for
-    /// `profile` if the environment held none. A blank API key and a place
-    /// that cannot be read are skipped: doctor only names the result as the
-    /// credential that the environment hides.
+    /// `profile` if the environment held none. It skips a blank API key and a
+    /// place that cannot be read, so only a report may use the result.
     pub(crate) fn stored_behind_environment(profile: Option<&str>) -> Option<SourcedCredential> {
         CredentialLookup::in_resolution_order(profile, Fallback::DefaultProfile)
             .filter_map(|lookup| lookup.resolve_stored().ok().flatten())

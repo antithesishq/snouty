@@ -275,12 +275,20 @@ impl AuthenticationInfo {
 
     /// The first stored credential that every command would use for
     /// `profile` if the environment held none. It skips a blank API key and a
-    /// place that cannot be read, so only a report may use the result.
+    /// place that cannot be read, so only a report may use the result. A
+    /// stored username and password stops the search with `None`: every
+    /// command meets it first.
     pub(crate) fn stored_behind_environment(profile: Option<&str>) -> Option<SourcedCredential> {
-        CredentialLookup::in_resolution_order(profile, Fallback::DefaultProfile)
-            .filter_map(|lookup| lookup.resolve_stored().ok().flatten())
-            .find(|stored| !stored.value().has_blank_api_key())
-            .map(|stored| stored.map_tag(CredentialSource::Stored))
+        for lookup in CredentialLookup::in_resolution_order(profile, Fallback::DefaultProfile) {
+            match lookup.resolve_stored() {
+                Ok(Some(stored)) if !stored.value().has_blank_api_key() => {
+                    return Some(stored.map_tag(CredentialSource::Stored));
+                }
+                Err(err) if err.downcast_ref::<UnsupportedPassword>().is_some() => return None,
+                _ => {}
+            }
+        }
+        None
     }
 
     /// Whether this is a blank API key (see [`is_blank_api_key`]).

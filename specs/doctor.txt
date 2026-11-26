@@ -310,6 +310,10 @@ set-env ANTITHESIS_PASSWORD ${FAKE_PASSWORD}
 stderr '^  ✗ snouty no longer accepts a username and password'
 stderr -literal 'NOTE: `unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD` to use the API key in the credentials file'
 ! stderr 'then run .snouty login'
+# A username and password stored for the selected profile comes before the
+# default profile's API key, so the fix also needs a login.
+! snouty --profile prod doctor
+stderr -literal 'NOTE: `unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD`, then run `snouty login --profile prod` or set ANTITHESIS_API_KEY'
 env ANTITHESIS_USERNAME=
 env ANTITHESIS_PASSWORD=
 
@@ -444,6 +448,11 @@ base_url = "${BASE_URL}"
 [default]
 type = "ApiKey"
 api_key = "${FAKE_API_KEY_A}"
+
+[profile.prod]
+type = "Password"
+username = "prod-user"
+password = "${FAKE_PASSWORD}"
 
 -- stored_password/.config/snouty/credentials.toml --
 [default]

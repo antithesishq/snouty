@@ -176,6 +176,9 @@ mod tests {
     /// `VALUE`. A Python `True`, `False`, or `None` is not a value either, and
     /// nor is a GitHub Actions permission such as `"id-token": "write"`, or
     /// the login kind of `GET /api/v0/registry`, such as `"auth": "docker"`.
+    /// The name that gh-aw gives to the variable of an MCP script secret,
+    /// `GH_AW_MCP_SCRIPTS_ENV_<hex>_<hex>`, is also not a value. Its lowercase
+    /// hex fails the uppercase test.
     fn allowed(value: &str) -> bool {
         let names_a_variable = value
             .strip_prefix('$')
@@ -200,6 +203,12 @@ mod tests {
             ]
             .contains(&value)
             || value.chars().all(|c| c.is_ascii_uppercase() || c == '_')
+            || value
+                .strip_prefix("GH_AW_MCP_SCRIPTS_ENV_")
+                .is_some_and(|rest| {
+                    rest.chars()
+                        .all(|c| matches!(c, '0'..='9' | 'a'..='f' | '_'))
+                })
     }
 
     /// A word that contains [`MARKER`].

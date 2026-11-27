@@ -43,24 +43,27 @@ url = "https://github.com/EmbarkStudios/cargo-deny/releases/download/0.20.2/carg
 url_api = "https://api.github.com/repos/EmbarkStudios/cargo-deny/releases/assets/471598357"
 
 [[tools."github:Boshen/cargo-shear"]]
-version = "1.14.0"
+version = "1.14.1"
 backend = "github:Boshen/cargo-shear"
-specifiers = ["1.14.0"]
+specifiers = ["1.14.1"]
 
 [tools."github:Boshen/cargo-shear"."platforms.linux-x64"]
-checksum = "sha256:1d7d860fdbd0d95857ff1f2643cc70d20c5d31236159ad51be7ce436eb3e5bf4"
-url = "https://github.com/Boshen/cargo-shear/releases/download/v1.14.0/cargo-shear-x86_64-unknown-linux-gnu.tar.gz"
-url_api = "https://api.github.com/repos/Boshen/cargo-shear/releases/assets/580851856"
+checksum = "sha256:282df08ba38e7fb2156d4e40bfd70bb9269c9c0563431d7865594ffcd422bb91"
+url = "https://github.com/Boshen/cargo-shear/releases/download/v1.14.1/cargo-shear-x86_64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/Boshen/cargo-shear/releases/assets/742156885"
+provenance = "github-attestations"
 
 [tools."github:Boshen/cargo-shear"."platforms.macos-arm64"]
-checksum = "sha256:e50b9375b1e93d2293c803819c118337f1e8fce519e4188a93bb0f5e08041ca3"
-url = "https://github.com/Boshen/cargo-shear/releases/download/v1.14.0/cargo-shear-aarch64-apple-darwin.tar.gz"
-url_api = "https://api.github.com/repos/Boshen/cargo-shear/releases/assets/580851820"
+checksum = "sha256:925a8e005a4966ce1e3f63d70743dbc68dd16e3369eea9aa91cfcb3ba61727cf"
+url = "https://github.com/Boshen/cargo-shear/releases/download/v1.14.1/cargo-shear-aarch64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/Boshen/cargo-shear/releases/assets/742156822"
+provenance = "github-attestations"
 
 [tools."github:Boshen/cargo-shear"."platforms.macos-x64"]
-checksum = "sha256:ea0df899fecd1ae8116d588c97ebdeef8c1ed487ac7df2701ab39d05063a7930"
-url = "https://github.com/Boshen/cargo-shear/releases/download/v1.14.0/cargo-shear-x86_64-apple-darwin.tar.gz"
-url_api = "https://api.github.com/repos/Boshen/cargo-shear/releases/assets/580851834"
+checksum = "sha256:c414e63bdc08205c19b276456fc8ac5af6e33c3f2b40086a782fedb7c13e5567"
+url = "https://github.com/Boshen/cargo-shear/releases/download/v1.14.1/cargo-shear-x86_64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/Boshen/cargo-shear/releases/assets/742156852"
+provenance = "github-attestations"
 
 [[tools."github:NixOS/nixfmt"]]
 version = "1.5.0"
@@ -73,27 +76,24 @@ url = "https://github.com/NixOS/nixfmt/releases/download/v1.5.0/nixfmt"
 url_api = "https://api.github.com/repos/NixOS/nixfmt/releases/assets/556098499"
 
 [[tools."github:docker/compose"]]
-version = "5.6.1"
+version = "5.7.1"
 backend = "github:docker/compose"
-specifiers = ["5.6.1"]
+specifiers = ["5.7.1"]
 
 [tools."github:docker/compose"."platforms.linux-x64"]
-checksum = "sha256:47737f4236e6d3ccea7291995203f8f018058783b4c3a9469119811a0b5db8c0"
-checksum_source = "mise-versions"
-url = "https://github.com/docker/compose/releases/download/v5.6.1/docker-compose-linux-x86_64"
-url_api = "https://api.github.com/repos/docker/compose/releases/assets/661714739"
+checksum = "sha256:af426722a8af5de812fcee30cc1c39f0639f5f723cbadefb25e5d4db054064cf"
+url = "https://github.com/docker/compose/releases/download/v5.7.1/docker-compose-linux-x86_64"
+url_api = "https://api.github.com/repos/docker/compose/releases/assets/734662195"
 
 [tools."github:docker/compose"."platforms.macos-arm64"]
-checksum = "sha256:fcce41226abd2b7b2936094e688bbd61284673dddafea542e08cb9a3b4423a8b"
-checksum_source = "mise-versions"
-url = "https://github.com/docker/compose/releases/download/v5.6.1/docker-compose-darwin-aarch64"
-url_api = "https://api.github.com/repos/docker/compose/releases/assets/661714755"
+checksum = "sha256:5a9aa8b5fb5b1e3cd83f39c80e570ae30aafd74cd9b47264fbe4ff7e6e6251ca"
+url = "https://github.com/docker/compose/releases/download/v5.7.1/docker-compose-darwin-aarch64"
+url_api = "https://api.github.com/repos/docker/compose/releases/assets/734662223"
 
 [tools."github:docker/compose"."platforms.macos-x64"]
-checksum = "sha256:245c191b11a6345dd3b32b8f6eadeed1e1dcd5147aa46dfa423462e95f587e93"
-checksum_source = "mise-versions"
-url = "https://github.com/docker/compose/releases/download/v5.6.1/docker-compose-darwin-x86_64"
-url_api = "https://api.github.com/repos/docker/compose/releases/assets/661714745"
+checksum = "sha256:c28b37c7bf1cc315acdf511c2c0f34ce19d4d33b6038611617063a99c45417c6"
+url = "https://github.com/docker/compose/releases/download/v5.7.1/docker-compose-darwin-x86_64"
+url_api = "https://api.github.com/repos/docker/compose/releases/assets/734662221"
 
 [[tools."github:foresterre/cargo-msrv"]]
 version = "0.19.6"
@@ -116,93 +116,93 @@ url = "https://github.com/foresterre/cargo-msrv/releases/download/v0.19.6/cargo-
 url_api = "https://api.github.com/repos/foresterre/cargo-msrv/releases/assets/664130506"
 
 [[tools."github:github/gh-aw"]]
-version = "1.0.1"
+version = "1.2.2"
 backend = "github:github/gh-aw"
-specifiers = ["1.0.1"]
+specifiers = ["1.2.2"]
 
 [tools."github:github/gh-aw"."platforms.linux-x64"]
-checksum = "sha256:746d0b41d5fb87e2c010b8ac23a464436bb745ff89fbd19a3456431942c37652"
-url = "https://github.com/github/gh-aw/releases/download/v1.0.1/linux-amd64"
-url_api = "https://api.github.com/repos/github/gh-aw/releases/assets/682204668"
+checksum = "sha256:c2378d85466d29cdbdfebd0e513557b5cbec18d34f44e7cc00c2fa323687a153"
+url = "https://github.com/github/gh-aw/releases/download/v1.2.2/linux-amd64"
+url_api = "https://api.github.com/repos/github/gh-aw/releases/assets/730089702"
 provenance = "github-attestations"
 
 [tools."github:github/gh-aw"."platforms.macos-arm64"]
-checksum = "sha256:e159eca9db8d9fed6eee61695c6b9a9235c8fcc83bda3a0915773ca0a50e4288"
-url = "https://github.com/github/gh-aw/releases/download/v1.0.1/darwin-arm64"
-url_api = "https://api.github.com/repos/github/gh-aw/releases/assets/682204493"
+checksum = "sha256:aac1836c65bc8e2e6866ba4c9513e97b89b146c12e7238e1579996aecf40f610"
+url = "https://github.com/github/gh-aw/releases/download/v1.2.2/darwin-arm64"
+url_api = "https://api.github.com/repos/github/gh-aw/releases/assets/730089149"
 provenance = "github-attestations"
 
 [tools."github:github/gh-aw"."platforms.macos-x64"]
-checksum = "sha256:df54cf7f5cd88f15bf61ff53b9d541884fca5e7e958160ae5c44b6473965e1fc"
-url = "https://github.com/github/gh-aw/releases/download/v1.0.1/darwin-amd64"
-url_api = "https://api.github.com/repos/github/gh-aw/releases/assets/682204490"
+checksum = "sha256:dbf065b63ae9e6a8d2c608caa7e44a1ca342070321c114e3ce95e5b337f39953"
+url = "https://github.com/github/gh-aw/releases/download/v1.2.2/darwin-amd64"
+url_api = "https://api.github.com/repos/github/gh-aw/releases/assets/730089141"
 provenance = "github-attestations"
 
 [[tools."github:modelcontextprotocol/registry"]]
-version = "1.8.7"
+version = "1.8.9"
 backend = "github:modelcontextprotocol/registry"
-specifiers = ["1.8.7"]
+specifiers = ["1.8.9"]
 
 [tools."github:modelcontextprotocol/registry".options]
 matching_regex = "^mcp-publisher_"
 
 [tools."github:modelcontextprotocol/registry"."platforms.linux-x64"]
-checksum = "sha256:00b21004149a4ce66f0782508ae4a2bce67d1bea395a8da0bd8028159fb59579"
-url = "https://github.com/modelcontextprotocol/registry/releases/download/v1.8.7/mcp-publisher_linux_amd64.tar.gz"
-url_api = "https://api.github.com/repos/modelcontextprotocol/registry/releases/assets/691911080"
+checksum = "sha256:4d527ca8f1ced0394c962dc925c2a4a4addef441cbefd62501c875e9481823a8"
+url = "https://github.com/modelcontextprotocol/registry/releases/download/v1.8.9/mcp-publisher_linux_amd64.tar.gz"
+url_api = "https://api.github.com/repos/modelcontextprotocol/registry/releases/assets/731147488"
 
 [tools."github:modelcontextprotocol/registry"."platforms.macos-arm64"]
-checksum = "sha256:b63dc083beb27e1a44c07c252ac147ff2c34af2f7822f705a17f8d0e1b44d592"
-url = "https://github.com/modelcontextprotocol/registry/releases/download/v1.8.7/mcp-publisher_darwin_arm64.tar.gz"
-url_api = "https://api.github.com/repos/modelcontextprotocol/registry/releases/assets/691911104"
+checksum = "sha256:4175f7281c42ef2f6666d086974aa01f3eecd68a067cfb8329f0a7e620db6e3a"
+url = "https://github.com/modelcontextprotocol/registry/releases/download/v1.8.9/mcp-publisher_darwin_arm64.tar.gz"
+url_api = "https://api.github.com/repos/modelcontextprotocol/registry/releases/assets/731147482"
 
 [tools."github:modelcontextprotocol/registry"."platforms.macos-x64"]
-checksum = "sha256:8675661dc8f800f245bfc000c93c597a65550988725e4d9a1df8423023609d5c"
-url = "https://github.com/modelcontextprotocol/registry/releases/download/v1.8.7/mcp-publisher_darwin_amd64.tar.gz"
-url_api = "https://api.github.com/repos/modelcontextprotocol/registry/releases/assets/691911116"
+checksum = "sha256:f131bc753c293eb754cd183c2201013e0ed7f7a8ac0bd67dd2c4912f029029fd"
+url = "https://github.com/modelcontextprotocol/registry/releases/download/v1.8.9/mcp-publisher_darwin_amd64.tar.gz"
+url_api = "https://api.github.com/repos/modelcontextprotocol/registry/releases/assets/731147430"
 
 [[tools."github:nextest-rs/nextest"]]
-version = "0.9.150"
+version = "0.9.152"
 backend = "github:nextest-rs/nextest"
-specifiers = ["0.9.150"]
+specifiers = ["0.9.152"]
 
 [tools."github:nextest-rs/nextest".options]
 version_prefix = "cargo-nextest-"
 
 [tools."github:nextest-rs/nextest"."platforms.linux-x64"]
-checksum = "sha256:b0959bc64232974224cf9fb22c915845398c0e8668fa7831eb5b43fb1eef781f"
-url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.150/cargo-nextest-0.9.150-x86_64-unknown-linux-gnu.tar.gz"
-url_api = "https://api.github.com/repos/nextest-rs/nextest/releases/assets/679066447"
+checksum = "sha256:d039b43c3e0958441b6ad0a39c8884d018b3d2e8fb9928f209074b1100b5e17a"
+url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.152/cargo-nextest-0.9.152-x86_64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/nextest-rs/nextest/releases/assets/745393873"
 provenance = "github-attestations"
 
 [tools."github:nextest-rs/nextest"."platforms.macos-arm64"]
-checksum = "sha256:82a759b4d218d38359424196ab244c470e8f7c7d149c814fbbeef4d67c3c301a"
-url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.150/cargo-nextest-0.9.150-universal-apple-darwin.tar.gz"
-url_api = "https://api.github.com/repos/nextest-rs/nextest/releases/assets/679078149"
+checksum = "sha256:2fadf57df4243e691f088ee3bff4f4ab9af16da0c95a1db84b5cb1685e098a76"
+url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.152/cargo-nextest-0.9.152-universal-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/nextest-rs/nextest/releases/assets/745423352"
 provenance = "github-attestations"
 
 [tools."github:nextest-rs/nextest"."platforms.macos-x64"]
-checksum = "sha256:82a759b4d218d38359424196ab244c470e8f7c7d149c814fbbeef4d67c3c301a"
-url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.150/cargo-nextest-0.9.150-universal-apple-darwin.tar.gz"
-url_api = "https://api.github.com/repos/nextest-rs/nextest/releases/assets/679078149"
+checksum = "sha256:2fadf57df4243e691f088ee3bff4f4ab9af16da0c95a1db84b5cb1685e098a76"
+url = "https://github.com/nextest-rs/nextest/releases/download/cargo-nextest-0.9.152/cargo-nextest-0.9.152-universal-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/nextest-rs/nextest/releases/assets/745423352"
 provenance = "github-attestations"
 
 [[tools.node]]
-version = "26.13.0"
+version = "26.13.1"
 backend = "core:node"
-specifiers = ["26.13.0"]
+specifiers = ["26.13.1"]
 
 [tools.node."platforms.linux-x64"]
-checksum = "sha256:5848553868b402d3fabb5b09270649977780a390f832155721025a08b5104455"
-url = "https://nodejs.org/dist/v26.13.0/node-v26.13.0-linux-x64.tar.gz"
+checksum = "sha256:518674de2b621728a5e4486f5fb3b7d2900bb3cc4aa97969edaa463db99f9778"
+url = "https://nodejs.org/dist/v26.13.1/node-v26.13.1-linux-x64.tar.gz"
 
 [tools.node."platforms.macos-arm64"]
-checksum = "sha256:d38bd5e5a2ddce6bbb5ce45e46e208337da4d51fffe611e567fd32073d6439f6"
-url = "https://nodejs.org/dist/v26.13.0/node-v26.13.0-darwin-arm64.tar.gz"
+checksum = "sha256:aec2514ea1ceb2ba52455e9ec65986f6749a06dd759e5db2a72e6889668c9735"
+url = "https://nodejs.org/dist/v26.13.1/node-v26.13.1-darwin-arm64.tar.gz"
 
 [tools.node."platforms.macos-x64"]
-checksum = "sha256:525c9b29bb0263d687de60a4cec0e2a6db876a8eb032369e5795eca71e7c358e"
-url = "https://nodejs.org/dist/v26.13.0/node-v26.13.0-darwin-x64.tar.gz"
+checksum = "sha256:82bb96078a24ca50b9c9a38f2379e6be6d87171fcd400fc14c8934b3bce96e2f"
+url = "https://nodejs.org/dist/v26.13.1/node-v26.13.1-darwin-x64.tar.gz"
 
 [[tools.shellcheck]]
 version = "0.11.0"
@@ -245,67 +245,67 @@ url = "https://github.com/tamasfe/taplo/releases/download/0.10.0/taplo-darwin-x8
 url_api = "https://api.github.com/repos/tamasfe/taplo/releases/assets/257323116"
 
 [[tools.typos]]
-version = "1.51.1"
+version = "1.52.2"
 backend = "aqua:crate-ci/typos"
-specifiers = ["1.51.1"]
+specifiers = ["1.52.2"]
 
 [tools.typos."platforms.linux-x64"]
-checksum = "sha256:93c301fd4120ff076e2cc2a6d6a61cab4a4bdb81899287c0938b452e56d1f454"
-checksum_source = "mise-versions"
-url = "https://github.com/crate-ci/typos/releases/download/v1.51.1/typos-v1.51.1-x86_64-unknown-linux-musl.tar.gz"
-url_api = "https://api.github.com/repos/crate-ci/typos/releases/assets/616653682"
+checksum = "sha256:3b13d1291281d39d01822e54035636487a7a0f228e70097899b1e33aeb0e7e93"
+url = "https://github.com/crate-ci/typos/releases/download/v1.52.2/typos-v1.52.2-x86_64-unknown-linux-musl.tar.gz"
+url_api = "https://api.github.com/repos/crate-ci/typos/releases/assets/733787189"
 
 [tools.typos."platforms.macos-arm64"]
-checksum = "sha256:316d50a32c3726a80ab39c6d12141b70080498973c5e8a9b068b12cde78b10c1"
-checksum_source = "mise-versions"
-url = "https://github.com/crate-ci/typos/releases/download/v1.51.1/typos-v1.51.1-aarch64-apple-darwin.tar.gz"
-url_api = "https://api.github.com/repos/crate-ci/typos/releases/assets/616656668"
+checksum = "sha256:b8e7b8b81f28cc808fd763b6d935536e15ba1ef72613bbb6d628b58a891da7ef"
+url = "https://github.com/crate-ci/typos/releases/download/v1.52.2/typos-v1.52.2-aarch64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/crate-ci/typos/releases/assets/733789873"
 
 [tools.typos."platforms.macos-x64"]
-checksum = "sha256:f3451079971633a7f769fb958fe06b0d64b5f1dc46df0854aa1ddb9a6f4031d6"
-checksum_source = "mise-versions"
-url = "https://github.com/crate-ci/typos/releases/download/v1.51.1/typos-v1.51.1-x86_64-apple-darwin.tar.gz"
-url_api = "https://api.github.com/repos/crate-ci/typos/releases/assets/616660774"
+checksum = "sha256:2c1e5cd3be644005d27543d7d83a32dbba36eb285bc12678818709938a63a988"
+url = "https://github.com/crate-ci/typos/releases/download/v1.52.2/typos-v1.52.2-x86_64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/crate-ci/typos/releases/assets/733789561"
 
 [[tools.uv]]
-version = "0.13.6"
+version = "0.13.8"
 backend = "aqua:astral-sh/uv"
-specifiers = ["0.13.6"]
+specifiers = ["0.13.8"]
 
 [tools.uv."platforms.linux-x64"]
-checksum = "sha256:f29c3e94ffabd7e6f3ba521dba169a9b7ec12100bf3257087f0f24f6123f3645"
-url = "https://github.com/astral-sh/uv/releases/download/0.13.6/uv-x86_64-unknown-linux-gnu.tar.gz"
-url_api = "https://api.github.com/repos/astral-sh/uv/releases/assets/679980644"
+checksum = "sha256:5acfd9177cfecf0bf87578f059728215ccc884388988f55f7a65041b57387d91"
+url = "https://github.com/astral-sh/uv/releases/download/0.13.8/uv-x86_64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/astral-sh/uv/releases/assets/740313966"
 provenance = "github-attestations"
 
 [tools.uv."platforms.macos-arm64"]
-checksum = "sha256:60fbd5c8a1ed681845eea28d9d622fcde03c51e91a43465b64a1e17db1ed3472"
-url = "https://github.com/astral-sh/uv/releases/download/0.13.6/uv-aarch64-apple-darwin.tar.gz"
-url_api = "https://api.github.com/repos/astral-sh/uv/releases/assets/679980393"
+checksum = "sha256:6b71028a6b904f2ae3340ef52e595512de807d06c0a20eaef2f692581b246558"
+url = "https://github.com/astral-sh/uv/releases/download/0.13.8/uv-aarch64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/astral-sh/uv/releases/assets/740313603"
 provenance = "github-attestations"
 
 [tools.uv."platforms.macos-x64"]
-checksum = "sha256:63ba17fdda55ad1a230d4b37fc6017ffa10c23688c83818bd3bfdf914c652a02"
-url = "https://github.com/astral-sh/uv/releases/download/0.13.6/uv-x86_64-apple-darwin.tar.gz"
-url_api = "https://api.github.com/repos/astral-sh/uv/releases/assets/679980609"
+checksum = "sha256:a04c2ffeac28b2003a2c13caf538ab425fcd7def3e4a41571f4a8fb370a66af3"
+url = "https://github.com/astral-sh/uv/releases/download/0.13.8/uv-x86_64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/astral-sh/uv/releases/assets/740313917"
 provenance = "github-attestations"
 
 [[tools.zizmor]]
-version = "1.31.1"
+version = "1.32.0"
 backend = "aqua:zizmorcore/zizmor"
-specifiers = ["1.31.1"]
+specifiers = ["1.32.0"]
 
 [tools.zizmor."platforms.linux-x64"]
-checksum = "sha256:d185f726bdaf92df78273217dfdd24ebcd6b0ef48cf3ce776ff5762b6e138c99"
-url = "https://github.com/zizmorcore/zizmor/releases/download/v1.31.1/zizmor-x86_64-unknown-linux-gnu.tar.gz"
-url_api = "https://api.github.com/repos/zizmorcore/zizmor/releases/assets/645467284"
+checksum = "sha256:bb110cc765eca9cd7efb2e284a956be5974c60027b0970f16397d86208a9957b"
+url = "https://github.com/zizmorcore/zizmor/releases/download/v1.32.0/zizmor-x86_64-unknown-linux-gnu.tar.gz"
+url_api = "https://api.github.com/repos/zizmorcore/zizmor/releases/assets/703541932"
+provenance = "github-attestations"
 
 [tools.zizmor."platforms.macos-arm64"]
-checksum = "sha256:ad5aa633cd56215b11e6c51d51f90c7e6b22904a75047d1215abbd422f61d698"
-url = "https://github.com/zizmorcore/zizmor/releases/download/v1.31.1/zizmor-aarch64-apple-darwin.tar.gz"
-url_api = "https://api.github.com/repos/zizmorcore/zizmor/releases/assets/645467283"
+checksum = "sha256:6efed18c4539a663fd3c851a2be9533fd8456c4e646d9416206da059154a0d3c"
+url = "https://github.com/zizmorcore/zizmor/releases/download/v1.32.0/zizmor-aarch64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/zizmorcore/zizmor/releases/assets/703541933"
+provenance = "github-attestations"
 
 [tools.zizmor."platforms.macos-x64"]
-checksum = "sha256:72ae63bb85b67229c06242f04195cb43927e9fab5f43803c6434dc701a517d61"
-url = "https://github.com/zizmorcore/zizmor/releases/download/v1.31.1/zizmor-x86_64-apple-darwin.tar.gz"
-url_api = "https://api.github.com/repos/zizmorcore/zizmor/releases/assets/645467287"
+checksum = "sha256:6983143c719ada6845a69cc4dd2bacc215f971662fecd8bbd2678388e5ce5969"
+url = "https://github.com/zizmorcore/zizmor/releases/download/v1.32.0/zizmor-x86_64-apple-darwin.tar.gz"
+url_api = "https://api.github.com/repos/zizmorcore/zizmor/releases/assets/703541930"
+provenance = "github-attestations"

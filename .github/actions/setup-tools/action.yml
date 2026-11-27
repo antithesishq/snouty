@@ -41,7 +41,7 @@ runs:
         # No other run can restore a cache saved on a queue entry's branch.
         save-if: ${{ github.event_name != 'merge_group' }}
 
-    - uses: jdx/mise-action@d5574b52816a478f9d4e6529a3f6ff17a8a36785 # v5.2.8
+    - uses: jdx/mise-action@90f833d396d0cc3674b631d2d225e306476c303a # v5.2.10
       with:
         version: "2026.10.25"
         # The SHA-256 of the mise binary of that release, per runner platform.

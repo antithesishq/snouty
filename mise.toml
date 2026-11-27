@@ -2,30 +2,30 @@
 # CI installs the same versions from mise.lock, which records each checksum.
 # Rust comes from rustup, through rust-toolchain.toml.
 [tools]
-uv = "0.13.6"
-typos = "1.51.1"
+uv = "0.13.8"
+typos = "1.52.2"
 shellcheck = "0.11.0"
 taplo = "0.10.0"
 actionlint = "1.7.12"
-zizmor = "1.31.1"
+zizmor = "1.32.0"
 cargo-deny = "0.20.2"
-"github:Boshen/cargo-shear" = "1.14.0"
-"github:nextest-rs/nextest" = { version = "0.9.150", version_prefix = "cargo-nextest-" }
+"github:Boshen/cargo-shear" = "1.14.1"
+"github:nextest-rs/nextest" = { version = "0.9.152", version_prefix = "cargo-nextest-" }
 # nixfmt releases only a Linux x86_64 binary. On macOS, use the nix shell.
 # snouty drives Docker Compose v2 through the `docker-compose` binary; the
 # container tests need it.
-"github:docker/compose" = "5.6.1"
+"github:docker/compose" = "5.7.1"
 "github:NixOS/nixfmt" = { version = "1.5.0", os = ["linux"] }
 # Compiles .github/workflows/weekly-audit.md into its lock file:
 # `mise run aw:compile`. Each release asset is a bare binary named for its
 # platform, so `bin` names it.
-"github:github/gh-aw" = { version = "1.0.1", bin = "gh-aw" }
+"github:github/gh-aw" = { version = "1.2.2", bin = "gh-aw" }
 # Validates and publishes server.json, the MCP Registry entry. Each release
 # also ships the registry server, so matching_regex picks mcp-publisher.
-"github:modelcontextprotocol/registry" = { version = "1.8.7", matching_regex = "^mcp-publisher_" }
+"github:modelcontextprotocol/registry" = { version = "1.8.9", matching_regex = "^mcp-publisher_" }
 # Publishes the npm package. Trusted publishing needs npm 11.5.1 or later,
 # which this Node release bundles.
-node = "26.13.0"
+node = "26.13.1"
 
 [settings]
 lockfile = true

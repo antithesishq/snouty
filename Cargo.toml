@@ -60,7 +60,7 @@ json-patch = "5"
 jsonschema = { version = "0.61", default-features = false }
 log = "0.4"
 open = "5"
-progenitor-client = "0.16.0"
+progenitor-client = "0.17.0"
 reqwest = { version = "0.13.1", default-features = false, features = ["http2", "json", "query", "stream", "rustls-no-provider"] }
 # aws-lc-rs, not ring: ring makes a smaller binary but cannot verify ECDSA
 # P-521 signatures, and some TLS-inspecting corporate proxies sign with a
@@ -85,7 +85,7 @@ zmij = "1"
 indexmap = { version = "2.10.0" }
 # No default features: snouty never caches statements (cache), and does not
 # target wasm (ffi-sqlite-wasm-rs).
-rusqlite = { version = "0.42", default-features = false, features = ["bundled"] }
+rusqlite = { version = "0.43", default-features = false, features = ["bundled"] }
 console = "0.16"
 indicatif = "0.18"
 tempfile = "3"
@@ -128,7 +128,7 @@ path = "examples/mock_api.rs"
 # through this type before handing it to the generator.
 openapiv3 = "2"
 prettyplease = "0.3.0"
-progenitor = "0.16.0"
+progenitor = "0.17.0"
 quote = "1"
 # Same schemars version progenitor/typify resolve; build.rs hands
 # with_conversion a schemars SchemaObject to map vtime onto crate::vtime::VTime.
@@ -153,7 +153,7 @@ tokio = { version = "1", features = ["test-util"] }
 testscript-rs = { git = "https://github.com/antithesishq/testscript-rs.git", branch = "main" }
 ctor = "1"
 wiremock = "0.6"
-hegeltest = { version = "0.52.0", features = ["static-engine"] }
+hegeltest = { version = "0.54.0", features = ["static-engine"] }
 expectrl = "0.9"
 strip-ansi-escapes = "0.2.1"
 # Waits on a spec command with a deadline (tests/spec.rs).

@@ -1,9 +1,9 @@
 [workspace]
 members = ["snouty-macros"]
 
-# Both crates inherit this. It is the oldest Rust that snouty supports, and can
-# be older than the rust-toolchain.toml pin, so that builders on an older Rust,
-# such as nixpkgs, can still build snouty. The msrv job in build.yml checks it.
+# Both crates inherit this. It is the oldest Rust that builds snouty, which the
+# msrv job in build.yml checks. Raise it whenever the code needs a newer Rust;
+# AGENTS.md says how.
 [workspace.package]
 rust-version = "1.98"
 

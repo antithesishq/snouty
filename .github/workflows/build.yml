@@ -160,7 +160,8 @@ jobs:
         if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
         run: mise run lint:advisories
   # Checks the workspace on `rust-version` from Cargo.toml, which can be older
-  # than the rust-toolchain.toml pin.
+  # than the rust-toolchain.toml pin. When it fails, raise `rust-version` as
+  # AGENTS.md says, rather than avoid the newer feature.
   msrv:
     runs-on: ubuntu-latest
     needs: skip-check

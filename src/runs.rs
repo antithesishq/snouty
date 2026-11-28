@@ -45,28 +45,6 @@ mod run_stream;
 use event_search::EventOutput;
 use ready::{Needs, RetryDecision, RetryPolicy};
 
-/// Print `note` to stderr under a limited command's output.
-///
-/// It only applies when the server filled `limit`. Fewer rows than asked for
-/// means the result set is exhausted, and the note would send the user back for
-/// rows that do not exist, so `shown` below `limit` prints nothing. Callers
-/// print it in text mode only. `blank_line_before` sets the note apart from
-/// output whose blocks are separated by blank lines.
-fn limit_note(
-    shown: usize,
-    limit: NonZeroU64,
-    blank_line_before: bool,
-    note: std::fmt::Arguments<'_>,
-) {
-    if (shown as u64) < limit.get() {
-        return;
-    }
-    if blank_line_before {
-        eprintln!();
-    }
-    eprintln!("{}", wrap_if_tty(&note.to_string()));
-}
-
 /// Print a rendered event stream, then the text-mode commentary under it.
 /// Rows go out one at a time, because the search backend holds the connection
 /// open on an in-progress run and a row that sits in a buffer waiting for EOF
@@ -100,14 +78,12 @@ async fn print_event_lines(
         return Ok(());
     }
     match limit {
-        Some(limit) if seen as u64 >= limit.get() => limit_note(
-            seen,
-            limit,
-            true,
-            format_args!(
+        Some(limit) if seen as u64 >= limit.get() => eprintln!(
+            "\n{}",
+            wrap_if_tty(&format!(
                 "showing {}; raise the limit for more",
                 count(limit.get(), "randomly sampled event")
-            ),
+            ))
         ),
         _ => eprintln!("\n— end of stream"),
     }
@@ -366,15 +342,20 @@ async fn cmd_runs_list(
         let width = terminal_width();
         outln!("{}", render_runs_table(&runs, width))?;
     }
-    limit_note(
-        runs.len(),
-        args.limit,
-        args.detail,
-        format_args!(
-            "Showing up to {} results. Additional results may be available.",
-            args.limit
-        ),
-    );
+    // Fewer runs than the limit means there are no more, so only a filled
+    // limit gets the note. `--detail` separates its blocks with blank lines.
+    if runs.len() as u64 >= args.limit.get() {
+        if args.detail {
+            eprintln!();
+        }
+        eprintln!(
+            "{}",
+            wrap_if_tty(&format!(
+                "Showing up to {} results. Additional results may be available.",
+                args.limit
+            ))
+        );
+    }
     Ok(())
 }
 

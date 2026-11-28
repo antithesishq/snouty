@@ -308,14 +308,30 @@ The Python scripts share one set of dependencies, in the top-level
 `pyproject.toml` and `uv.lock`. Do not declare dependencies in a script.
 
 `rust-toolchain.toml` pins the exact Rust that CI, the release builds, nix and
-local builds use, and its minor version is the MSRV, the `rust-version` in the
-`[workspace.package]` table of `Cargo.toml`, which both crates use. Both track
-the newest stable Rust: each week, `.github/workflows/bump-rust.yml` updates the
-rust-overlay pin, sets both to the overlay's newest stable release, and, when
-that is a new release, pushes the `bump-rust` branch and files an issue with a
-link that opens its pull request. To change the Rust version by hand, change
-both lines, and update the rust-overlay pin (`npins update rust-overlay`) when
-it does not have that release yet.
+local builds use, and tracks the newest stable Rust. The MSRV, the
+`rust-version` in the `[workspace.package]` table of `Cargo.toml`, which both
+crates use, is the oldest Rust that builds snouty, and the `msrv` job in
+`build.yml` checks the workspace on it. It records what the code needs; it is
+not a promise to hold back. snouty is not a library, so use the newest Rust
+features freely. When a change fails the `msrv` job, raise `rust-version` to
+the oldest Rust that builds the change, even when that is the newest stable
+release: set it to the version that `cargo msrv find --min <current> --max
+<pinned minor> -- cargo check --workspace --all-targets --locked` reports,
+minor version only. Do not rewrite code to stay under the old value. Do not
+raise it further than the code needs, so that builders that lag behind stable
+Rust, such as nixpkgs, build snouty when they can.
+
+Each week, `.github/workflows/bump-rust.yml` updates the rust-overlay pin, and,
+when the overlay has a new stable release, runs `scripts/bump-rust.sh`, then
+pushes the `bump-rust` branch and files an issue with a link that opens its
+pull request. The script pins the new release, and applies clippy's fixes as
+if `rust-version` were that release, so the code picks up what the release
+makes simpler. When that changes code, it raises `rust-version` to the oldest
+Rust that builds the result, which `cargo msrv find` finds. To move to a new
+Rust by hand, run the script with the release, with no uncommitted .rs
+changes, with rustup and mise's cargo-msrv
+(`mise exec -- scripts/bump-rust.sh 1.101.0`), after
+`npins update rust-overlay` when the overlay does not have it yet.
 
 On a system that cannot run mise's prebuilt binaries, such as NixOS, use the
 nix shell (`nix-shell`, or direnv with `.envrc`) instead. It has the same

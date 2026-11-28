@@ -1,10 +1,11 @@
 [workspace]
 members = ["snouty-macros"]
 
-# Both crates inherit this. It is the minor version of the toolchain that
-# rust-toolchain.toml pins, which CI and the release builds use.
+# Both crates inherit this. It is the oldest Rust that builds snouty, which the
+# msrv job in build.yml checks. Raise it whenever the code needs a newer Rust;
+# AGENTS.md says how.
 [workspace.package]
-rust-version = "1.100"
+rust-version = "1.98"
 
 [workspace.lints.clippy]
 pedantic = { level = "warn", priority = -1 }

@@ -95,6 +95,26 @@ checksum = "sha256:c28b37c7bf1cc315acdf511c2c0f34ce19d4d33b6038611617063a99c4541
 url = "https://github.com/docker/compose/releases/download/v5.7.1/docker-compose-darwin-x86_64"
 url_api = "https://api.github.com/repos/docker/compose/releases/assets/734662221"
 
+[[tools."github:foresterre/cargo-msrv"]]
+version = "0.19.6"
+backend = "github:foresterre/cargo-msrv"
+specifiers = ["0.19.6"]
+
+[tools."github:foresterre/cargo-msrv"."platforms.linux-x64"]
+checksum = "sha256:5fa075586e40d1fb0c57bc1c69e31e6608e2765fa4a16c1920d4e4c1ca76efef"
+url = "https://github.com/foresterre/cargo-msrv/releases/download/v0.19.6/cargo-msrv-x86_64-unknown-linux-gnu-v0.19.6.tgz"
+url_api = "https://api.github.com/repos/foresterre/cargo-msrv/releases/assets/664092192"
+
+[tools."github:foresterre/cargo-msrv"."platforms.macos-arm64"]
+checksum = "sha256:9c2af7930eab0bb325321a0d32c34a09fc3bcb7116f36f92e0d5e110984f6244"
+url = "https://github.com/foresterre/cargo-msrv/releases/download/v0.19.6/cargo-msrv-aarch64-apple-darwin-v0.19.6.tgz"
+url_api = "https://api.github.com/repos/foresterre/cargo-msrv/releases/assets/664091723"
+
+[tools."github:foresterre/cargo-msrv"."platforms.macos-x64"]
+checksum = "sha256:f1525fb20fe47e5e1c380ea2158cf67f4588fd74f1a081734c9444f95f0cd0b0"
+url = "https://github.com/foresterre/cargo-msrv/releases/download/v0.19.6/cargo-msrv-x86_64-apple-darwin-v0.19.6.tgz"
+url_api = "https://api.github.com/repos/foresterre/cargo-msrv/releases/assets/664130506"
+
 [[tools."github:github/gh-aw"]]
 version = "1.2.2"
 backend = "github:github/gh-aw"

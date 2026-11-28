@@ -159,6 +159,45 @@ jobs:
       - name: cargo-deny advisories
         if: ${{ !cancelled() && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') }}
         run: mise run lint:advisories
+  # Checks the workspace on `rust-version` from Cargo.toml, which can be older
+  # than the rust-toolchain.toml pin. When it fails, raise `rust-version` as
+  # AGENTS.md says, rather than avoid the newer feature.
+  msrv:
+    runs-on: ubuntu-latest
+    needs: skip-check
+    if: needs.skip-check.outputs.should_skip != 'true'
+    timeout-minutes: 20
+    env:
+      # The Linux release binaries are musl builds, with musl-only
+      # dependencies, and nothing is gnu-only, so one musl check covers both.
+      # The macOS-only code is not checked on the MSRV.
+      CARGO_BUILD_TARGET: x86_64-unknown-linux-musl
+    steps:
+      # musl-gcc compiles the aws-lc and mimalloc C sources. The test job says
+      # why the kernel.org mirror is there.
+      - name: Install musl-tools
+        run: |
+          printf 'https://mirrors.edge.kernel.org/ubuntu/\tpriority:4\n' |
+            sudo tee -a /etc/apt/apt-mirrors.txt
+          sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # RUSTUP_TOOLCHAIN overrides rust-toolchain.toml for every later step,
+      # rust-cache's key included.
+      - name: Read rust-version
+        run: echo "RUSTUP_TOOLCHAIN=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)" >> "$GITHUB_ENV"
+
+      - uses: ./.github/actions/setup-tools
+        with:
+          toolchain: ${{ env.RUSTUP_TOOLCHAIN }}
+          targets: ${{ env.CARGO_BUILD_TARGET }}
+          mise: "false"
+
+      - name: Check on the MSRV
+        run: cargo check --workspace --all-targets --locked
   test:
     runs-on: ${{ matrix.os }}
     needs: skip-check
@@ -353,6 +392,7 @@ jobs:
       - test-macos-arm
       - staging
       - lint
+      - msrv
     if: always()
     steps:
       - name: Verify every needed job

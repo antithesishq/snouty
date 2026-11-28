@@ -44,8 +44,5 @@ Options:
           Log API requests to stderr (authentication tokens redacted)
 
       --settings <SETTINGS>
-          Path to the snouty settings file (default: ./.snouty.toml; overrides
-          SNOUTY_SETTINGS_PATH)
-
-      --profile <PROFILE>
-          Settings profile to select (overrides ANTITHESIS_PROFILE)
+          Path to a settings file that overrides the global settings file
+          (overrides SNOUTY_SETTINGS_PATH)

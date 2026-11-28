@@ -30,7 +30,7 @@ use crate::{
     },
     auth::{
         AuthenticationInfo, CredentialSource, CredentialStore, PersistableCredentials,
-        in_github_actions, is_blank_api_key, login_command, no_credentials_suggestion, persist,
+        in_github_actions, is_blank_api_key, no_credentials_suggestion, persist,
         rejected_credential_next_step,
     },
     env,
@@ -201,12 +201,11 @@ async fn do_cmd_login(
     OutputOptions { verbose, .. }: OutputOptions,
     prompter: &impl Prompter,
 ) -> Result<()> {
-    let profile = current_settings.profile();
     let interactive = prompter.is_interactive();
     // The global file alone, which login writes. A fault in it fails login
-    // before any prompt or request, also when the environment or a project
-    // file hides it from `current_settings`.
-    let saved = Settings::resolve_global_file(profile.map(str::to_owned))?;
+    // before any prompt or request, also when the environment or a named
+    // settings file hides it from `current_settings`.
+    let saved = Settings::resolve_global_file()?;
 
     let tenant_to_use = match tenant {
         Some(tenant) => tenant,
@@ -222,11 +221,10 @@ async fn do_cmd_login(
         )?,
     };
 
-    // The credential stored for the profile, which a new credential replaces.
     // A read error counts as nothing stored, because storing a credential
     // backs up an unparsable credentials file. A blank key cannot
     // authenticate, so it also counts as nothing stored.
-    let stored = AuthenticationInfo::stored_for_profile(profile)
+    let stored = AuthenticationInfo::stored()
         .inspect_err(|err| debug!("no stored credentials to read: {err:#}"))
         .ok()
         .flatten()
@@ -254,7 +252,6 @@ async fn do_cmd_login(
         current_settings,
         &tenant_url,
         new_credentials.as_ref(),
-        profile,
         interactive,
         verbose,
     )
@@ -310,15 +307,14 @@ async fn do_cmd_login(
 
     // The settings go first, so that a settings file that login cannot
     // update leaves the stored credential alone. When the credential cannot
-    // be stored, the settings go back, so that the profile does not name the
-    // new tenant with the old credential.
+    // be stored, the settings go back, so that they do not name the new
+    // tenant with the old credential.
     let base_url_to_save =
         matches!(tenant_url.source, TenantUrlSource::Flag).then_some(tenant_url.url.as_str());
     let previous_settings = update_settings_in_global_file(
         &tenant_to_use,
         &registry_to_use.to_string(),
         base_url_to_save,
-        profile,
     )?;
 
     // The kind of credential login wrote, and where.
@@ -329,7 +325,7 @@ async fn do_cmd_login(
                 PersistableCredentials::Password { .. } => "username and password",
                 PersistableCredentials::OAuth { .. } => "OAuth credentials",
             };
-            match persist(credentials, profile) {
+            match persist(credentials) {
                 Ok(store) => Some(kind.with_tag(store)),
                 Err(err) => {
                     return Err(match previous_settings.restore() {
@@ -339,8 +335,7 @@ async fn do_cmd_login(
                         Err(restore_err) => err
                             .wrap_err(format!("could not store the credential, and {restore_err:#}"))
                             .suggestion(format!(
-                                "the settings now name `{tenant_to_use}` without its credential; fix the error, then run {} again",
-                                login_command(profile)
+                                "the settings now name `{tenant_to_use}` without its credential; fix the error, then run `snouty login` again"
                             )),
                     });
                 }
@@ -358,24 +353,21 @@ async fn do_cmd_login(
         &registry_to_use,
         base_url_to_save,
         replaced,
-        profile,
         written,
         stored.as_ref(),
     );
     if let Some(CustomRegistry::Kept { reported }) = custom {
-        let mut command = vec![
-            "snouty".to_owned(),
-            "login".to_owned(),
-            "--tenant".to_owned(),
-            tenant_to_use.to_string(),
-            "--registry".to_owned(),
-            reported.to_string(),
-        ];
-        if let Some(profile) = profile {
-            command.extend(["--profile".to_owned(), profile.to_owned()]);
-        }
-        let command = shlex::try_join(command.iter().map(String::as_str))
-            .expect("arguments and environment variables hold no NUL");
+        let tenant = tenant_to_use.to_string();
+        let reported_text = reported.to_string();
+        let command = shlex::try_join([
+            "snouty",
+            "login",
+            "--tenant",
+            &tenant,
+            "--registry",
+            &reported_text,
+        ])
+        .expect("a tenant and a registry hold no NUL");
         eprintln!(
             "{}",
             crate::render::wrap_if_tty(&format!(
@@ -479,22 +471,18 @@ async fn fetch_registry(
     settings: &Settings,
     tenant_url: &TenantUrl<'_>,
     new_credentials: Option<&PersistableCredentials>,
-    profile: Option<&str>,
     interactive: bool,
     verbose: bool,
 ) -> Result<Option<RegistryResponse>> {
     let tenant = tenant_url.tenant;
     // Login can replace only a credential that it stores, and only at a
     // terminal.
-    let login_again = || {
-        let login = login_command(profile);
-        if interactive {
-            format!("run {login} again, and enter an API key or sign in with single sign-on")
-        } else if in_github_actions() {
-            no_credentials_suggestion(true).to_owned()
-        } else {
-            format!("set ANTITHESIS_API_KEY, or run {login} in a terminal")
-        }
+    let login_again = if interactive {
+        "run `snouty login` again, and enter an API key or sign in with single sign-on"
+    } else if in_github_actions() {
+        no_credentials_suggestion(true)
+    } else {
+        "set ANTITHESIS_API_KEY, or run `snouty login` in a terminal"
     };
     let nothing_to_check = || {
         user_error(format!(
@@ -506,24 +494,24 @@ async fn fetch_registry(
     let (authentication, env_next_step) = match new_credentials {
         Some(credentials) => (credentials.to_unrefreshable_authentication_info(), None),
         // A read error of a stored credential passes through as it is.
-        None => match AuthenticationInfo::find_ambient(profile)? {
-            None => return Err(nothing_to_check().suggestion(login_again())),
+        None => match AuthenticationInfo::find_ambient()? {
+            None => return Err(nothing_to_check().suggestion(login_again)),
             // Login does not check with a username and password.
             Some(found) if matches!(found.value(), AuthenticationInfo::Password { .. }) => {
                 let next_step = match found.tag() {
                     // Every later command reads the environment first, so a
                     // credential at the prompt would not replace one there.
                     CredentialSource::Environment { .. } => {
-                        "unset ANTITHESIS_USERNAME and ANTITHESIS_PASSWORD".to_owned()
+                        "unset ANTITHESIS_USERNAME and ANTITHESIS_PASSWORD"
                     }
-                    CredentialSource::Stored(_) => login_again(),
+                    CredentialSource::Stored(_) => login_again,
                 };
                 return Err(nothing_to_check().suggestion(next_step));
             }
             Some(found) => {
                 let next_step = match found.tag() {
                     CredentialSource::Environment { .. } => {
-                        Some(rejected_credential_next_step(&found, profile))
+                        Some(rejected_credential_next_step(&found))
                     }
                     CredentialSource::Stored(_) => None,
                 };
@@ -546,7 +534,7 @@ async fn fetch_registry(
             .map_err(|err| match api_error_status(&err) {
                 Some(status) if rejects_credential(status) => {
                     user_error(format!("`{tenant}` did not accept the credential"))
-                        .suggestion(env_next_step.unwrap_or_else(login_again))
+                        .suggestion(env_next_step.unwrap_or_else(|| login_again.to_owned()))
                 }
                 _ => tenant_url.unreachable(&err).unwrap_or(err),
             })?;
@@ -588,16 +576,11 @@ fn print_login_summary(
     registry: &Registry,
     base_url: Option<&str>,
     replaced: Option<&Registry>,
-    profile: Option<&str>,
     written: Option<Tagged<&str, CredentialStore>>,
     stored: Option<&Tagged<AuthenticationInfo, CredentialStore>>,
 ) {
     // Wrap each line at word boundaries on a terminal, so that no word is cut.
     let say = |line: &str| println!("{}", crate::render::wrap_stdout_if_tty(line));
-    let scope = match profile {
-        Some(p) => format!(" under profile `{p}`"),
-        None => String::new(),
-    };
     let replacing_registry =
         replaced.map_or_default(|replaced| format!(", replacing registry `{replaced}`"));
     let saved = match base_url {
@@ -606,17 +589,17 @@ fn print_login_summary(
         }
         None => format!("tenant `{tenant}` and registry `{registry}`"),
     };
-    say(&format!("\nSaved {saved}{scope}{replacing_registry}."));
+    say(&format!("\nSaved {saved}{replacing_registry}."));
     match (written, stored) {
         (Some(written), _) => {
             say(&format!(
-                "Stored your {}{scope} in {}{}.",
+                "Stored your {} in {}{}.",
                 written.value(),
                 location(written.tag()),
                 replacing(stored)
             ));
         }
-        (None, Some(_)) => say(&format!("Your stored credentials{scope} are unchanged.")),
+        (None, Some(_)) => say("Your stored credentials are unchanged."),
         (None, None) => {}
     }
     // The snouty credential signs in to the tenant's own registry. Any other
@@ -635,10 +618,10 @@ fn print_login_summary(
 }
 
 /// Where the summary says a credential is stored.
-fn location(store: &CredentialStore) -> String {
+fn location(store: &CredentialStore) -> &'static str {
     match store {
-        CredentialStore::Keychain { .. } => "the system keychain".to_owned(),
-        CredentialStore::CredentialsFile { .. } => "the credentials file".to_owned(),
+        CredentialStore::Keychain => "the system keychain",
+        CredentialStore::CredentialsFile { .. } => "the credentials file",
     }
 }
 
@@ -1733,8 +1716,8 @@ mod tests {
         /// isolated `$HOME`.
         // `&self` keeps the call inside the environment's lifetime.
         #[allow(clippy::unused_self)]
-        fn resolve_settings(&self, profile: Option<&str>) -> Result<Settings> {
-            Settings::resolve(None, profile.map(str::to_owned))
+        fn resolve_settings(&self) -> Result<Settings> {
+            Settings::resolve(None)
         }
     }
 
@@ -1774,7 +1757,7 @@ mod tests {
     #[tokio::test]
     async fn login_collects_and_persists_an_api_key() -> Result<()> {
         let env = LoginEnv::new();
-        let settings = env.resolve_settings(None)?;
+        let settings = env.resolve_settings()?;
         let prompter = Script::default()
             .input("mytenant")
             .secret(FAKE_API_KEY_A)
@@ -1799,7 +1782,7 @@ mod tests {
     #[tokio::test]
     async fn login_flags_skip_the_tenant_prompt_and_override_the_registry() -> Result<()> {
         let env = LoginEnv::new();
-        let settings = env.resolve_settings(None)?;
+        let settings = env.resolve_settings()?;
         let prompter = Script::default().secret(FAKE_API_KEY_A).build();
 
         login_with_flags(Some("myrepo"), &settings, &prompter).await?;
@@ -1841,7 +1824,7 @@ mod tests {
     async fn login_asks_before_it_replaces_a_saved_custom_registry() -> Result<()> {
         for (agree, expected) in [(true, REGISTRY_URL), (false, CUSTOM_REGISTRY)] {
             let env = env_with_registry("mytenant", CUSTOM_REGISTRY);
-            let settings = env.resolve_settings(None)?;
+            let settings = env.resolve_settings()?;
             let prompter = Script::default()
                 .secret(FAKE_API_KEY_A)
                 .confirm(agree)
@@ -1865,7 +1848,7 @@ mod tests {
             std::env::set_var("ANTITHESIS_TENANT", "othertenant");
             std::env::set_var("ANTITHESIS_REGISTRY", "env.example.com/app");
         }
-        let settings = env.resolve_settings(None)?;
+        let settings = env.resolve_settings()?;
         let prompter = Script::default()
             .secret(FAKE_API_KEY_A)
             .confirm(false)
@@ -1892,7 +1875,7 @@ mod tests {
             env.seed(".config/snouty/settings.toml", &saved);
             // SAFETY: `env` holds the lock that serializes env mutation.
             unsafe { std::env::set_var("SNOUTY_UPDATE_CHANNEL", "stable") };
-            let settings = env.resolve_settings(None)?;
+            let settings = env.resolve_settings()?;
             let prompter = Script::default().build();
 
             let err = login_with_flags(registry, &settings, &prompter)
@@ -1915,7 +1898,7 @@ mod tests {
     #[tokio::test]
     async fn login_does_not_ask_about_the_saved_registry_with_the_registry_flag() -> Result<()> {
         let env = env_with_registry("mytenant", CUSTOM_REGISTRY);
-        let settings = env.resolve_settings(None)?;
+        let settings = env.resolve_settings()?;
         let prompter = Script::default().secret(FAKE_API_KEY_A).build();
 
         login_with_flags(Some("flag.example.com"), &settings, &prompter).await?;
@@ -1926,29 +1909,17 @@ mod tests {
     }
 
     /// Login asks nothing when the saved registry is the tenant's registry,
-    /// when it belongs to another tenant, or when only another profile saves
-    /// it, and it saves the tenant's registry.
+    /// or when it belongs to another tenant, and it saves the tenant's
+    /// registry.
     #[tokio::test]
     async fn login_saves_the_tenant_registry_without_a_question() -> Result<()> {
-        for (profile, seeded) in [
-            (
-                None,
-                format!("tenant = \"mytenant\"\nregistry = \"https://{REGISTRY_URL}/\"\n"),
-            ),
-            (
-                None,
-                format!("tenant = \"othertenant\"\nregistry = \"{CUSTOM_REGISTRY}\"\n"),
-            ),
-            (
-                Some("prod"),
-                format!(
-                    "tenant = \"mytenant\"\n[profile.staging]\nregistry = \"{CUSTOM_REGISTRY}\"\n"
-                ),
-            ),
+        for seeded in [
+            format!("tenant = \"mytenant\"\nregistry = \"https://{REGISTRY_URL}/\"\n"),
+            format!("tenant = \"othertenant\"\nregistry = \"{CUSTOM_REGISTRY}\"\n"),
         ] {
             let env = LoginEnv::new();
             env.seed(".config/snouty/settings.toml", &seeded);
-            let settings = env.resolve_settings(profile)?;
+            let settings = env.resolve_settings()?;
             let prompter = Script::default().secret(FAKE_API_KEY_A).build();
 
             do_cmd_login(
@@ -1971,42 +1942,16 @@ mod tests {
         Ok(())
     }
 
-    /// A profile without its own registry pushes to the top-level one, so
-    /// login asks before it saves the tenant's registry in the profile.
+    /// A custom registry saved under the `repository` alias is a custom
+    /// registry too.
     #[tokio::test]
-    async fn login_asks_about_the_top_level_registry_of_a_profile() -> Result<()> {
-        let env = env_with_registry("mytenant", CUSTOM_REGISTRY);
-        let settings = env.resolve_settings(Some("prod"))?;
-        let prompter = Script::default()
-            .secret(FAKE_API_KEY_A)
-            .confirm(false)
-            .build();
-
-        do_cmd_login(
-            Some("mytenant".parse()?),
-            None,
-            None,
-            &settings,
-            OutputOptions::default(),
-            &prompter,
-        )
-        .await?;
-
-        assert_eq!(prompter.prompts()[1], REPLACE_CUSTOM);
-        assert_saved_registry(&env, CUSTOM_REGISTRY);
-        Ok(())
-    }
-
-    /// The profile saves its custom registry under the `repository` alias,
-    /// and takes the top-level tenant.
-    #[tokio::test]
-    async fn login_asks_about_the_profiles_own_custom_registry() -> Result<()> {
+    async fn login_asks_about_a_custom_registry_under_the_repository_alias() -> Result<()> {
         let env = LoginEnv::new();
         env.seed(
             ".config/snouty/settings.toml",
-            &format!("tenant = \"mytenant\"\n[profile.prod]\nrepository = \"{CUSTOM_REGISTRY}\"\n"),
+            &format!("tenant = \"mytenant\"\nrepository = \"{CUSTOM_REGISTRY}\"\n"),
         );
-        let settings = env.resolve_settings(Some("prod"))?;
+        let settings = env.resolve_settings()?;
         let prompter = Script::default()
             .secret(FAKE_API_KEY_A)
             .confirm(false)
@@ -2028,16 +1973,12 @@ mod tests {
     }
 
     /// A `repository` key, an alias for `registry`, loads as the
-    /// registry. Login writes `registry`, and removes `repository` from the
-    /// table that it writes.
+    /// registry. Login writes `registry`, and removes `repository`.
     #[tokio::test]
     async fn login_replaces_the_repository_alias_with_registry() -> Result<()> {
         let env = LoginEnv::new();
-        env.seed(
-            ".config/snouty/settings.toml",
-            "repository = \"old\"\n[profile.p]\nrepository = \"old-p\"\n",
-        );
-        let settings = env.resolve_settings(None)?;
+        env.seed(".config/snouty/settings.toml", "repository = \"old\"\n");
+        let settings = env.resolve_settings()?;
         assert_eq!(
             settings.registry().map(Tagged::value),
             Some(&"old".parse()?)
@@ -2049,12 +1990,6 @@ mod tests {
         let stored: toml::Table = env.settings().parse()?;
         assert_eq!(stored["registry"].as_str(), Some("myrepo"), "{stored}");
         assert!(!stored.contains_key("repository"), "{stored}");
-        // Login writes only the top-level table, so the profile keeps its key.
-        assert_eq!(
-            stored["profile"]["p"]["repository"].as_str(),
-            Some("old-p"),
-            "{stored}"
-        );
         Ok(())
     }
 
@@ -2063,7 +1998,7 @@ mod tests {
     #[tokio::test]
     async fn login_saves_nothing_when_the_tenant_rejects_the_credential() -> Result<()> {
         let env = LoginEnv::with_version(401, r#"{"message":"Invalid or expired bearer token."}"#);
-        let settings = env.resolve_settings(None)?;
+        let settings = env.resolve_settings()?;
         let prompter = Script::default().secret(FAKE_API_KEY_A).build();
 
         let err = login_with_flags(Some("myrepo"), &settings, &prompter)
@@ -2099,7 +2034,7 @@ mod tests {
         cache
             .store_value(&cache.key("get_registry", &()), &cached.with_tag(lifetime))
             .await;
-        let settings = env.resolve_settings(None)?;
+        let settings = env.resolve_settings()?;
         let prompter = Script::default().secret(FAKE_API_KEY_A).build();
 
         login_with_flags(None, &settings, &prompter).await?;
@@ -2113,7 +2048,7 @@ mod tests {
     }
 
     /// A credential that login cannot store puts the settings file back, so
-    /// the profile does not name the new tenant with the old credential.
+    /// the settings do not name the new tenant with the old credential.
     #[tokio::test]
     async fn login_restores_the_settings_when_it_cannot_store_the_credential() -> Result<()> {
         let env = LoginEnv::new();
@@ -2122,7 +2057,7 @@ mod tests {
         // A directory where the credentials file goes cannot be read or
         // replaced.
         std::fs::create_dir_all(env.config_dir().join("credentials.toml"))?;
-        let settings = env.resolve_settings(None)?;
+        let settings = env.resolve_settings()?;
         let prompter = Script::default()
             .input("mytenant")
             .secret(FAKE_API_KEY_A)
@@ -2163,7 +2098,7 @@ mod tests {
     async fn login_stores_no_credential_when_it_cannot_write_the_settings() -> Result<()> {
         const BROKEN: &str = "tenant = \"unclosed\n";
         let env = LoginEnv::new();
-        let settings = env.resolve_settings(None)?;
+        let settings = env.resolve_settings()?;
         let config_dir = env.config_dir();
         let prompter = Script::default()
             .input("mytenant")
@@ -2189,11 +2124,8 @@ mod tests {
     #[tokio::test]
     async fn login_stores_no_credential_when_it_cannot_update_the_settings() -> Result<()> {
         let env = LoginEnv::new();
-        let settings = env.resolve_settings(Some("prod"))?;
-        env.seed(
-            ".config/snouty/settings.toml",
-            "profile = \"not a table\"\n",
-        );
+        let settings = env.resolve_settings()?;
+        env.seed(".config/snouty/settings.toml", "tenant = 123\n");
         let prompter = Script::default().build();
 
         let err = login(&settings, &prompter)
@@ -2201,7 +2133,7 @@ mod tests {
             .expect_err("a malformed settings file must fail the login");
 
         assert!(
-            format!("{err:#}").contains("`profile` must be a table of profiles"),
+            format!("{err:#}").contains("invalid setting `tenant`"),
             "{err:#}"
         );
         assert!(prompter.prompts().is_empty(), "{:?}", prompter.prompts());
@@ -2216,7 +2148,7 @@ mod tests {
             200,
             r#"{"auth":"docker","registry_url":"registry.example.com/acme"}"#,
         );
-        let settings = env.resolve_settings(None)?;
+        let settings = env.resolve_settings()?;
         let prompter = Script::default().secret(FAKE_API_KEY_A).build();
 
         login_with_flags(None, &settings, &prompter).await?;
@@ -2242,7 +2174,7 @@ mod tests {
             ".config/snouty/settings.toml",
             "registry = \"saved.example.com/app\"\n",
         );
-        let settings = env.resolve_settings(None)?;
+        let settings = env.resolve_settings()?;
         let prompter = Script::default()
             .secret(FAKE_API_KEY_A)
             .input("typed.example.com/app")
@@ -2272,7 +2204,7 @@ mod tests {
             200,
             r#"{"latest_api_version":"v1","release_version":"main-abc123"}"#,
         );
-        let settings = env.resolve_settings(None)?;
+        let settings = env.resolve_settings()?;
         let prompter = Script::default()
             .secret(FAKE_API_KEY_A)
             .input("typed.example.com/app")
@@ -2303,7 +2235,7 @@ mod tests {
             },
             ..LoginBackend::default()
         });
-        let settings = env.resolve_settings(None)?;
+        let settings = env.resolve_settings()?;
         let prompter = Script::default().secret(FAKE_API_KEY_A).build();
 
         login_with_flags(None, &settings, &prompter).await?;
@@ -2328,7 +2260,7 @@ mod tests {
             ".config/snouty/settings.toml",
             "tenant = \"mytenant\"\nregistry = \"https://saved.example.com/my-org/\"\n",
         );
-        let settings = env.resolve_settings(None)?;
+        let settings = env.resolve_settings()?;
         let prompter = Script::default().secret(FAKE_API_KEY_A).input("").build();
 
         login_with_flags(None, &settings, &prompter).await?;
@@ -2349,7 +2281,7 @@ mod tests {
             200,
             r#"{"auth":"docker","registry_url":"https://registry.example.com/acme/"}"#,
         );
-        let settings = env.resolve_settings(None)?;
+        let settings = env.resolve_settings()?;
         let prompter = Script::default().secret(FAKE_API_KEY_A).build();
 
         login_with_flags(None, &settings, &prompter).await?;
@@ -2367,7 +2299,7 @@ mod tests {
     #[tokio::test]
     async fn login_saves_nothing_when_the_tenant_reports_no_registry_host() -> Result<()> {
         let env = LoginEnv::with_registry(200, r#"{"auth":"antithesis","registry_url":" "}"#);
-        let settings = env.resolve_settings(None)?;
+        let settings = env.resolve_settings()?;
         let prompter = Script::default().secret(FAKE_API_KEY_A).build();
 
         let err = login_with_flags(None, &settings, &prompter)
@@ -2394,7 +2326,7 @@ mod tests {
     async fn login_replaces_a_stored_username_and_password_with_an_api_key() -> Result<()> {
         let env = LoginEnv::new();
         env.seed(".config/snouty/credentials.toml", &password_credentials());
-        let settings = env.resolve_settings(None)?;
+        let settings = env.resolve_settings()?;
         // An empty script after the key panics if the flow asks anything more.
         let prompter = Script::default()
             .input("mytenant")
@@ -2409,50 +2341,13 @@ mod tests {
         Ok(())
     }
 
-    /// A stored credential of another profile is not replaced, so login does
-    /// not ask.
-    #[tokio::test]
-    async fn login_does_not_ask_to_replace_another_profiles_credential() -> Result<()> {
-        let env = LoginEnv::new();
-        env.seed(".config/snouty/credentials.toml", &password_credentials());
-        let settings = env.resolve_settings(Some("prod"))?;
-        let prompter = Script::default()
-            .input("ptenant")
-            .secret(FAKE_API_KEY_B)
-            .build();
-
-        login(&settings, &prompter).await?;
-
-        let creds = env.credentials();
-        assert!(creds.contains(FAKE_PASSWORD), "{creds}");
-        assert!(creds.contains(&api_key_line(FAKE_API_KEY_B)), "{creds}");
-        Ok(())
-    }
-
-    /// The selected profile scopes the persisted login.
-    #[tokio::test]
-    async fn login_scopes_to_a_named_profile() -> Result<()> {
-        let env = LoginEnv::new();
-        let settings = env.resolve_settings(Some("prod"))?;
-        let prompter = Script::default()
-            .input("ptenant")
-            .secret(FAKE_API_KEY_B)
-            .build();
-
-        login(&settings, &prompter).await?;
-
-        let stored = env.settings();
-        assert!(stored.contains("[profile.prod]"), "{stored}");
-        Ok(())
-    }
-
     /// Conversely, when the backend advertises an OAuth port strategy, the "Single
     /// sign-on (OAuth)" option *is* offered — first in the menu and as the
     /// default.
     #[tokio::test]
     async fn login_offers_oauth_first_when_backend_supports_it() -> Result<()> {
         let env = LoginEnv::with_oauth_config(OAUTH_EPHEMERAL);
-        let settings = env.resolve_settings(None)?;
+        let settings = env.resolve_settings()?;
         // Finish via the API-key option rather than OAuth, which would start
         // the interactive browser flow.
         let prompter = Script::default()
@@ -2482,7 +2377,7 @@ mod tests {
             ".config/snouty/credentials.toml",
             &api_key_credentials(FAKE_API_KEY_A),
         );
-        let settings = env.resolve_settings(None)?;
+        let settings = env.resolve_settings()?;
         let prompter = Script::default()
             .input("mytenant")
             .select(1)
@@ -2505,7 +2400,7 @@ mod tests {
             ".config/snouty/credentials.toml",
             &api_key_credentials(FAKE_API_KEY_A),
         );
-        let settings = env.resolve_settings(None)?;
+        let settings = env.resolve_settings()?;
         let prompter = Script::default()
             .input("mytenant")
             .secret("") // hit enter
@@ -2530,7 +2425,7 @@ mod tests {
         let env = LoginEnv::new();
         let seeded = api_key_credentials(FAKE_API_KEY_A);
         env.seed(".config/snouty/credentials.toml", &seeded);
-        let settings = env.resolve_settings(None)?;
+        let settings = env.resolve_settings()?;
         let prompter = Script::default()
             .input("mytenant")
             .secret(FAKE_API_KEY_A)
@@ -2549,7 +2444,7 @@ mod tests {
         let env = LoginEnv::new();
         let seeded = api_key_credentials(FAKE_API_KEY_A);
         env.seed(".config/snouty/credentials.toml", &seeded);
-        let settings = env.resolve_settings(None)?;
+        let settings = env.resolve_settings()?;
         let prompter = Script::default()
             .input("mytenant")
             .secret(&format!(" {FAKE_API_KEY_A}\n"))
@@ -2561,30 +2456,6 @@ mod tests {
         Ok(())
     }
 
-    /// Login for a profile offers back only that profile's key, not the key of
-    /// the default profile, and storing a key for it replaces nothing.
-    #[tokio::test]
-    async fn login_does_not_offer_another_profiles_key() -> Result<()> {
-        let env = LoginEnv::new();
-        env.seed(
-            ".config/snouty/credentials.toml",
-            &api_key_credentials(FAKE_API_KEY_A),
-        );
-        let settings = env.resolve_settings(Some("prod"))?;
-        let prompter = Script::default()
-            .input("ptenant")
-            .secret(FAKE_API_KEY_B)
-            .build();
-
-        login(&settings, &prompter).await?;
-
-        assert_eq!(prompter.secret_hints(), vec![None]);
-        let creds = env.credentials();
-        assert!(creds.contains(&api_key_line(FAKE_API_KEY_A)), "{creds}");
-        assert!(creds.contains(&api_key_line(FAKE_API_KEY_B)), "{creds}");
-        Ok(())
-    }
-
     /// A key typed at the prompt replaces the stored one once the user confirms.
     #[tokio::test]
     async fn login_replaces_the_stored_api_key_when_one_is_typed() -> Result<()> {
@@ -2593,7 +2464,7 @@ mod tests {
             ".config/snouty/credentials.toml",
             &api_key_credentials(FAKE_API_KEY_A),
         );
-        let settings = env.resolve_settings(None)?;
+        let settings = env.resolve_settings()?;
         let prompter = Script::default()
             .input("mytenant")
             .secret(FAKE_API_KEY_B)
@@ -2613,7 +2484,7 @@ mod tests {
     async fn login_replaces_a_blank_stored_api_key_without_asking() -> Result<()> {
         let env = LoginEnv::new();
         env.seed(".config/snouty/credentials.toml", &api_key_credentials(""));
-        let settings = env.resolve_settings(None)?;
+        let settings = env.resolve_settings()?;
         let prompter = Script::default()
             .input("mytenant")
             .secret(FAKE_API_KEY_A)
@@ -2636,7 +2507,7 @@ mod tests {
             ".config/snouty/credentials.toml",
             &oauth_credentials(Some(FAKE_REFRESH_TOKEN_A)),
         );
-        let stored = AuthenticationInfo::stored_for_profile(None)?;
+        let stored = AuthenticationInfo::stored()?;
         let stored = stored.as_ref().map(Tagged::value);
 
         // An empty script panics if the flow asks anything.
@@ -2667,7 +2538,7 @@ mod tests {
         let env = LoginEnv::with_oauth_config(OAUTH_EPHEMERAL);
         let seeded = api_key_credentials(FAKE_API_KEY_A);
         env.seed(".config/snouty/credentials.toml", &seeded);
-        let settings = env.resolve_settings(None)?;
+        let settings = env.resolve_settings()?;
         let prompter = Script::default()
             .input("mytenant")
             .select(0)
@@ -2692,7 +2563,7 @@ mod tests {
         // SAFETY: `LoginEnv` holds `ENV_LOCK` for this test's whole body, so no
         // other test reads or writes process env while this var is set.
         unsafe { std::env::set_var("ANTITHESIS_API_KEY", FAKE_API_KEY_B) };
-        let settings = env.resolve_settings(None)?;
+        let settings = env.resolve_settings()?;
         let prompter = Script::default()
             .input("mytenant")
             .secret(FAKE_API_KEY_A)
@@ -2720,7 +2591,7 @@ mod tests {
         // SAFETY: `LoginEnv` holds `ENV_LOCK` for this test's whole body, so no
         // other test reads or writes process env while this var is set.
         unsafe { std::env::set_var("ANTITHESIS_API_KEY", FAKE_API_KEY_B) };
-        let settings = env.resolve_settings(None)?;
+        let settings = env.resolve_settings()?;
         let prompter = Script::default().input("mytenant").skip_secret().build();
 
         let result = login(&settings, &prompter).await;
@@ -2742,7 +2613,7 @@ mod tests {
     async fn login_reports_a_stored_credential_that_cannot_be_read() -> Result<()> {
         let env = LoginEnv::new();
         env.seed(".config/snouty/credentials.toml", "not = [valid toml");
-        let settings = env.resolve_settings(None)?;
+        let settings = env.resolve_settings()?;
         let prompter = Script::default().input("mytenant").skip_secret().build();
 
         let err = login(&settings, &prompter)
@@ -2762,7 +2633,7 @@ mod tests {
     #[tokio::test]
     async fn login_fails_on_esc_at_the_menu_without_a_credential() -> Result<()> {
         let env = LoginEnv::with_oauth_config(OAUTH_EPHEMERAL);
-        let settings = env.resolve_settings(None)?;
+        let settings = env.resolve_settings()?;
         let prompter = Script::default().input("mytenant").skip_select().build();
 
         assert!(
@@ -2886,7 +2757,7 @@ mod tests {
         );
 
         // --- Write an API key; it must land in the keychain, not a file. ---
-        let settings = env.resolve_settings(None)?;
+        let settings = env.resolve_settings()?;
         let prompter = Script::default()
             .input("acme")
             .secret(FAKE_API_KEY_A)
@@ -2922,38 +2793,13 @@ mod tests {
 
         // --- Read-back: an in-process read does not trip the ACL prompt that
         // the `security` CLI would. ---
-        let resolved = AuthenticationInfo::stored_for_profile(None)?;
+        let resolved = AuthenticationInfo::stored()?;
         match resolved.as_ref().map(|found| (found.value(), found.tag())) {
-            Some((
-                AuthenticationInfo::ApiKey { api_key },
-                CredentialStore::Keychain { profile: None },
-            )) => assert_eq!(api_key.as_str(), FAKE_API_KEY_A),
+            Some((AuthenticationInfo::ApiKey { api_key }, CredentialStore::Keychain)) => {
+                assert_eq!(api_key.as_str(), FAKE_API_KEY_A);
+            }
             _ => panic!("expected the API key to resolve from the keychain"),
         }
-
-        // --- Profile scoping uses a distinct keychain entry (`profile_<name>`). ---
-        let prof_settings = env.resolve_settings(Some("prod"))?;
-        let prof_prompter = Script::default()
-            .input("acme")
-            .secret(FAKE_API_KEY_B)
-            .build();
-        login(&prof_settings, &prof_prompter).await?;
-        assert!(
-            security(
-                &home,
-                &[
-                    "find-generic-password",
-                    "-s",
-                    "snouty",
-                    "-a",
-                    "profile_prod",
-                    kc,
-                ],
-            )
-            .status
-            .success(),
-            "profile credential not found under `profile_prod`"
-        );
 
         Ok(())
     }

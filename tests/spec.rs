@@ -213,9 +213,7 @@ fn snouty_cmd(env: &testscript_rs::TestEnvironment, args: &[String]) -> std::pro
 /// The isolated `XDG_CONFIG_HOME` for a spec's snouty subprocess: a per-spec dir
 /// with no `snouty/` subdir, so a developer's or CI's real
 /// `~/.config/snouty/settings.toml` can't leak in and change resolved
-/// tenant/registry/etc. (The project file is already isolated — each spec runs
-/// in its own work dir, so `./.snouty.toml` doesn't exist unless the spec makes
-/// it.)
+/// tenant/registry/etc.
 ///
 /// `XDG_CONFIG_HOME` is shared, though: on macOS, podman keeps its *machine
 /// connection* under `$XDG_CONFIG_HOME/containers`, so an empty dir makes the

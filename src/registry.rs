@@ -15,10 +15,10 @@ use jiff::{SignedDuration, Timestamp};
 use url::Url;
 
 use crate::api::AntithesisApi;
-use crate::auth::{AuthenticationInfo, PasswordPolicy, RefreshableOAuthToken, RenewalError};
+use crate::auth::{AuthenticationInfo, RefreshableOAuthToken, RenewalError};
 use crate::error::user_error;
 use crate::render::sanitize;
-use crate::settings::{Settings, SettingsRequest, Tenant, UnresolvedProfile};
+use crate::settings::{Settings, Tenant};
 use crate::tag::Tagged;
 
 pub const USERNAME: &str = "snouty-token";
@@ -153,113 +153,33 @@ fn tenant_registry_of<'a>(
 
 /// Whether the tenant registry of `settings` is the registry of `tenant`.
 fn pushes_to_tenant(settings: &Settings, tenant: &str) -> bool {
-    pushes_to(
-        settings.tenant(),
-        settings.registry().map(Tagged::value),
-        tenant,
-    )
-}
-
-/// [`pushes_to_tenant`] of the `tenant_setting` and `registry_setting`.
-fn pushes_to(
-    tenant_setting: Option<&Tenant>,
-    registry_setting: Option<&Registry>,
-    tenant: &str,
-) -> bool {
-    tenant_registry_of(tenant_setting, registry_setting)
+    tenant_registry_of(settings.tenant(), settings.registry().map(Tagged::value))
         .and_then(Registry::antithesis_tenant)
         .is_some_and(|own| *own == *tenant)
 }
 
-/// The settings and the credential for the registry of `tenant`. Settings
-/// files resolve as for every snouty command: `--settings` or
-/// `SNOUTY_SETTINGS_PATH` takes the place of `./.snouty.toml`, and the global
-/// settings file applies.
-///
-/// 1. When `--profile` or `ANTITHESIS_PROFILE` names a profile, use only that
-///    profile, with the credential that every command finds for it. When the
-///    profile fails to resolve, fail with its error. When its tenant registry
-///    is not the registry of `tenant`, return `None`: do not search the other
-///    profiles.
-/// 2. Otherwise, find the profiles whose tenant registry is the registry of
-///    `tenant`, in the order of [`SettingsRequest::resolve_every_profile`]:
-///    the top-level defaults first, then the named profiles. A profile whose
-///    tenant or registry fails to resolve is skipped. Use the first of them
-///    that has its own credential ([`AuthenticationInfo::find_own`]); when
-///    that profile fails to resolve, fail with its error. A named profile does not use the
-///    stored credential of the default profile, because that credential can
-///    be for another tenant. When no profile matches, return `None`. When
-///    profiles match but none has its own credential, fail: with the error
-///    of the first matching profile that fails to resolve, if any.
+/// The settings and the credential for the registry of `tenant`, or `None`
+/// when the settings push to another registry. `settings_path` is the
+/// `--settings` flag. The credential is the one that every command finds,
+/// unchecked: [`secret`] refuses a username and password.
 ///
 /// The search makes no network call.
 pub fn select_settings(
-    project_settings_path: Option<PathBuf>,
-    profile: Option<String>,
+    settings_path: Option<PathBuf>,
     tenant: &str,
 ) -> Result<Option<(Settings, AuthenticationInfo)>> {
-    let request = SettingsRequest::from_flags(project_settings_path, profile)?;
-    if request.profile().is_some() {
-        let settings = request.resolve()?;
-        if !pushes_to_tenant(&settings, tenant) {
-            return Ok(None);
-        }
-        let credential = AuthenticationInfo::for_ambient_configuration(
-            settings.profile(),
-            PasswordPolicy::Reject,
-        )?
-        .untag();
-        return Ok(Some((settings, credential)));
+    let settings = Settings::resolve(settings_path)?;
+    if !pushes_to_tenant(&settings, tenant) {
+        return Ok(None);
     }
-    let profiles = request.resolve_every_profile(|tenant_setting, registry_setting| {
-        pushes_to(tenant_setting, registry_setting, tenant)
-    })?;
-    first_with_own_credential(profiles, tenant, |profile| {
-        AuthenticationInfo::find_own(profile, PasswordPolicy::Reject)
-    })
-}
-
-/// The first of `profiles` whose tenant registry is the registry of `tenant`,
-/// and for whose profile `own_credential` finds a credential, with that
-/// credential. A profile that failed to resolve but has a credential gives
-/// its error. When no profile has a credential, the error of the first
-/// profile that failed to resolve.
-fn first_with_own_credential(
-    profiles: Vec<Result<Settings, UnresolvedProfile>>,
-    tenant: &str,
-    mut own_credential: impl FnMut(Option<&str>) -> Result<Option<AuthenticationInfo>>,
-) -> Result<Option<(Settings, AuthenticationInfo)>> {
-    let mut matched = false;
-    let mut first_error = None;
-    for settings in profiles {
-        let settings = match settings {
-            Ok(settings) => settings,
-            Err(UnresolvedProfile { profile, error }) => {
-                if own_credential(profile.as_deref())?.is_some() {
-                    return Err(error);
-                }
-                first_error.get_or_insert(error);
-                continue;
-            }
-        };
-        if !pushes_to_tenant(&settings, tenant) {
-            continue;
-        }
-        if let Some(credential) = own_credential(settings.profile())? {
-            return Ok(Some((settings, credential)));
-        }
-        matched = true;
-    }
-    if let Some(err) = first_error {
-        return Err(err);
-    }
-    if matched {
-        return Err(user_error(format!(
+    // Docker shows only the message of an error, so it names the next step.
+    let credential = AuthenticationInfo::find_ambient()?.ok_or_else(|| {
+        user_error(format!(
             "no credential found; {}",
             crate::auth::no_credentials_suggestion(crate::auth::in_github_actions())
-        )));
-    }
-    Ok(None)
+        ))
+    })?;
+    Ok(Some((settings, credential.untag())))
 }
 
 /// The registry secret, which the credential helper returns as `Secret` with
@@ -331,13 +251,10 @@ mod tests {
     use super::*;
     use crate::api::ResponseCache;
     use crate::auth::GithubActionsOidcToken;
-    use crate::settings::{ANTITHESIS_REGISTRY_VAR_NAME, SettingSource};
-    use crate::tag::Tag;
     use crate::testutils::auth::{oauth_credential_in, paseto_expiring_in};
     use crate::testutils::fake_secrets::{
-        FAKE_ACCESS_TOKEN_A, FAKE_ACCESS_TOKEN_B, FAKE_API_KEY_A, FAKE_API_KEY_B,
-        FAKE_OIDC_REQUEST_TOKEN, FAKE_OIDC_TOKEN, FAKE_PASSWORD, FAKE_REFRESH_TOKEN_A,
-        FAKE_REFRESH_TOKEN_B, FAKE_USERNAME,
+        FAKE_ACCESS_TOKEN_A, FAKE_ACCESS_TOKEN_B, FAKE_API_KEY_A, FAKE_OIDC_REQUEST_TOKEN,
+        FAKE_OIDC_TOKEN, FAKE_PASSWORD, FAKE_REFRESH_TOKEN_A, FAKE_REFRESH_TOKEN_B, FAKE_USERNAME,
     };
     use hegel::generators;
     use wiremock::matchers::{header, method, path, query_param};
@@ -556,20 +473,6 @@ mod tests {
         assert!(err.to_string().contains("snouty login"), "{err}");
     }
 
-    fn settings(profile: Option<&str>, tenant: &str, registry_setting: &str) -> Settings {
-        let builder = Settings::builder()
-            .tenant(tenant.parse().unwrap())
-            .registry(
-                registry(registry_setting)
-                    .with_tag(SettingSource::Env(ANTITHESIS_REGISTRY_VAR_NAME)),
-            );
-        match profile {
-            Some(profile) => builder.profile(profile),
-            None => builder,
-        }
-        .build()
-    }
-
     fn registry(value: &str) -> Registry {
         value.parse().unwrap()
     }
@@ -662,152 +565,6 @@ mod tests {
             &Settings::builder().build(),
             &registry("registry.acme.antithesis.com")
         ));
-    }
-
-    fn api_key(api_key: &str) -> AuthenticationInfo {
-        AuthenticationInfo::ApiKey {
-            api_key: api_key.to_owned(),
-        }
-    }
-
-    /// The profile and the API key that the implicit search selects for the
-    /// acme registry, from `profiles` and `own_credential`.
-    fn select_for_acme(
-        profiles: Vec<Settings>,
-        own_credential: impl FnMut(Option<&str>) -> Result<Option<AuthenticationInfo>>,
-    ) -> Result<Option<(Option<String>, String)>> {
-        let profiles = profiles.into_iter().map(Ok).collect();
-        let selected = first_with_own_credential(profiles, "acme", own_credential)?;
-        Ok(selected.map(|(settings, credential)| {
-            let AuthenticationInfo::ApiKey { api_key } = credential else {
-                panic!("not an API key: {credential}");
-            };
-            (settings.profile().map(str::to_owned), api_key)
-        }))
-    }
-
-    /// A stored credential for each profile in `stored`, and none for the
-    /// other profiles.
-    fn stored<'a>(
-        stored: &'a [(Option<&'a str>, &'a str)],
-    ) -> impl FnMut(Option<&str>) -> Result<Option<AuthenticationInfo>> + 'a {
-        |profile| {
-            Ok(stored
-                .iter()
-                .find(|(name, _)| *name == profile)
-                .map(|(_, key)| api_key(key)))
-        }
-    }
-
-    /// The default profile of another tenant, then two acme profiles.
-    fn other_then_acme_dev_and_prod() -> Vec<Settings> {
-        vec![
-            settings(None, "other", "registry.other.antithesis.com/app"),
-            settings(Some("acme-dev"), "acme", "registry.acme.antithesis.com/dev"),
-            settings(
-                Some("acme-prod"),
-                "acme",
-                "registry.acme.antithesis.com/prod",
-            ),
-        ]
-    }
-
-    /// A matching profile that fails to resolve gives its error when it has
-    /// its own credential. Without one, it does not hide a later profile with
-    /// a credential, and its error shows when no profile has one.
-    #[test]
-    fn a_broken_profile_gives_its_error_when_it_has_a_credential_or_no_profile_does() {
-        let profiles = || {
-            vec![
-                Err(UnresolvedProfile {
-                    profile: Some("acme-dev".to_owned()),
-                    error: eyre!("broken acme-dev"),
-                }),
-                Ok(settings(
-                    Some("acme-prod"),
-                    "acme",
-                    "registry.acme.antithesis.com/prod",
-                )),
-            ]
-        };
-        let select = |stored: &[(Option<&str>, &str)]| {
-            first_with_own_credential(profiles(), "acme", self::stored(stored))
-                .map(|selected| {
-                    selected.and_then(|(settings, _)| settings.profile().map(str::to_owned))
-                })
-                .map_err(|err| err.to_string())
-        };
-        assert_eq!(
-            select(&[(Some("acme-prod"), FAKE_API_KEY_B)]),
-            Ok(Some("acme-prod".to_owned()))
-        );
-        assert_eq!(
-            select(&[
-                (Some("acme-dev"), FAKE_API_KEY_A),
-                (Some("acme-prod"), FAKE_API_KEY_B)
-            ]),
-            Err("broken acme-dev".to_owned())
-        );
-        assert_eq!(select(&[]), Err("broken acme-dev".to_owned()));
-    }
-
-    #[test]
-    fn the_first_matching_profile_with_its_own_credential_wins() {
-        let stored = [(None, FAKE_API_KEY_A), (Some("acme-prod"), FAKE_API_KEY_B)];
-        assert_eq!(
-            select_for_acme(other_then_acme_dev_and_prod(), self::stored(&stored)).unwrap(),
-            Some((Some("acme-prod".to_owned()), FAKE_API_KEY_B.to_owned())),
-        );
-    }
-
-    #[test]
-    fn a_matching_default_profile_uses_its_own_credential() {
-        let profiles = vec![
-            settings(None, "acme", "registry.acme.antithesis.com/app"),
-            settings(
-                Some("acme-prod"),
-                "acme",
-                "registry.acme.antithesis.com/prod",
-            ),
-        ];
-        let stored = [(None, FAKE_API_KEY_A), (Some("acme-prod"), FAKE_API_KEY_B)];
-        assert_eq!(
-            select_for_acme(profiles, self::stored(&stored)).unwrap(),
-            Some((None, FAKE_API_KEY_A.to_owned())),
-        );
-    }
-
-    #[test]
-    fn matching_profiles_without_their_own_credential_fail() {
-        let stored = [(None, FAKE_API_KEY_A)];
-        let err =
-            select_for_acme(other_then_acme_dev_and_prod(), self::stored(&stored)).unwrap_err();
-        // CI runs this test in GitHub Actions, which changes the suggestion.
-        let suggestion = crate::auth::no_credentials_suggestion(crate::auth::in_github_actions());
-        assert_eq!(
-            err.to_string(),
-            format!("no credential found; {suggestion}")
-        );
-    }
-
-    #[test]
-    fn a_credential_for_every_profile_selects_the_first_match() {
-        // As ANTITHESIS_API_KEY does: the environment applies to every profile.
-        let every_profile = |_: Option<&str>| Ok(Some(api_key(FAKE_API_KEY_B)));
-        assert_eq!(
-            select_for_acme(other_then_acme_dev_and_prod(), every_profile).unwrap(),
-            Some((Some("acme-dev".to_owned()), FAKE_API_KEY_B.to_owned())),
-        );
-    }
-
-    #[test]
-    fn no_matching_profile_is_not_found() {
-        let profiles = vec![settings(None, "other", "registry.other.antithesis.com/app")];
-        let stored = [(None, FAKE_API_KEY_A)];
-        assert_eq!(
-            select_for_acme(profiles, self::stored(&stored)).unwrap(),
-            None
-        );
     }
 
     /// The registry forms in use: an ECR host, a GAR path, and an

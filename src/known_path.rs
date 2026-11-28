@@ -16,24 +16,20 @@ use crate::error::user_error;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum KnownPathKind {
-    /// `--settings` or `SNOUTY_SETTINGS_PATH` (`explicit`), else
-    /// `./.snouty.toml`.
-    Project { explicit: bool },
+    /// The settings file that `--settings` or `SNOUTY_SETTINGS_PATH` names.
+    Project,
     /// `settings.toml` in the global settings dir.
     Global,
     /// `credentials.toml` in the global settings dir.
     Credentials,
-    /// `trust.toml` in the global settings dir.
-    Trust,
 }
 
 impl KnownPathKind {
     /// What a message calls a file of this type.
     fn noun(self) -> &'static str {
         match self {
-            Self::Project { .. } | Self::Global => "settings file",
+            Self::Project | Self::Global => "settings file",
             Self::Credentials => "credentials file",
-            Self::Trust => "trust file",
         }
     }
 }
@@ -41,10 +37,9 @@ impl KnownPathKind {
 impl fmt::Display for KnownPathKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
-            Self::Project { .. } => "project",
+            Self::Project => "project",
             Self::Global => "global",
             Self::Credentials => "credentials",
-            Self::Trust => "trust",
         })
     }
 }
@@ -146,31 +141,23 @@ mod tests {
 
     #[test]
     fn a_missing_file_loads_as_none_unless_it_is_required() {
-        let path = || {
-            KnownPath::new(
-                KnownPathKind::Project { explicit: true },
-                Path::new("/no/such/.snouty.toml"),
-            )
-        };
+        let path = || KnownPath::new(KnownPathKind::Project, Path::new("/no/such/settings.toml"));
         assert!(path().load(false).unwrap().is_none());
         let err = path().load(true).unwrap_err();
         assert_eq!(
             err.to_string(),
-            "the settings file /no/such/.snouty.toml was not found"
+            "the settings file /no/such/settings.toml was not found"
         );
     }
 
     #[test]
     fn invalid_toml_is_reported_with_path() {
         let file = KnownFile {
-            path: KnownPath::new(
-                KnownPathKind::Project { explicit: true },
-                Path::new("/some/.snouty.toml"),
-            ),
+            path: KnownPath::new(KnownPathKind::Project, Path::new("/some/settings.toml")),
             text: "this is = = not toml".to_owned(),
         };
         let msg = file.load().unwrap_err().to_string();
         assert!(msg.contains("not valid TOML"), "unexpected error: {msg}");
-        assert!(msg.contains(".snouty.toml"), "unexpected error: {msg}");
+        assert!(msg.contains("settings.toml"), "unexpected error: {msg}");
     }
 }

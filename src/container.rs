@@ -16,8 +16,8 @@ use crate::error::user_error;
 use crate::process::output_with_timeout;
 use crate::registry::{self, Registry};
 use crate::settings::{
-    ANTITHESIS_PROFILE_ENV_VAR_NAME, ANTITHESIS_REGISTRY_VAR_NAME, CONTAINER_ENGINE_VAR_NAME,
-    ContainerEngine, SNOUTY_SETTINGS_PATH_VAR_NAME, Settings, mkdir,
+    ANTITHESIS_REGISTRY_VAR_NAME, CONTAINER_ENGINE_VAR_NAME, ContainerEngine,
+    SNOUTY_SETTINGS_PATH_VAR_NAME, Settings, mkdir,
 };
 
 /// Wall-clock budget for each synchronous docker/podman call made while
@@ -66,14 +66,13 @@ impl std::fmt::Display for Architecture {
 
 /// The tenant registry credential that `snouty launch` presents when it
 /// pushes: [`registry::USERNAME`] and `secret`, for `registry`.
-/// `settings_path` and `profile` are the `--settings` and `--profile` flags
-/// of the launch. A `docker-credential-snouty` that the engine runs gets them
-/// in its environment, so that it resolves the settings of the launch.
+/// `settings_path` is the `--settings` flag of the launch. A
+/// `docker-credential-snouty` that the engine runs gets it in its
+/// environment, so that it resolves the settings of the launch.
 pub struct TenantRegistryAuth {
     pub registry: Registry,
     pub secret: String,
     pub settings_path: Option<PathBuf>,
-    pub profile: Option<String>,
 }
 
 /// The environment of each push and manifest round trip to `registry`, which
@@ -89,9 +88,9 @@ struct TenantRegistryEnv {
 }
 
 impl TenantRegistryEnv {
-    /// `env`, plus the registry and the `--settings` and `--profile` flags of
-    /// `auth`. The helper needs the registry because no setting names the
-    /// registry that the tenant reports.
+    /// `env`, plus the registry and the `--settings` flag of `auth`. The
+    /// helper needs the registry because no setting names the registry that
+    /// the tenant reports.
     fn new(
         auth: TenantRegistryAuth,
         mut env: Vec<(&'static str, OsString)>,
@@ -104,10 +103,6 @@ impl TenantRegistryEnv {
         env.extend(
             auth.settings_path
                 .map(|path| (SNOUTY_SETTINGS_PATH_VAR_NAME, path.into_os_string())),
-        );
-        env.extend(
-            auth.profile
-                .map(|profile| (ANTITHESIS_PROFILE_ENV_VAR_NAME, profile.into())),
         );
         Self {
             registry: auth.registry,
@@ -1407,7 +1402,6 @@ mod tests {
             registry: TENANT_HOST.parse().unwrap(),
             secret: FAKE_API_KEY_A.to_string(),
             settings_path: Some(PathBuf::from("launch.toml")),
-            profile: Some("acme".to_string()),
         }
     }
 
@@ -1462,7 +1456,7 @@ mod tests {
                 r#"if [ -z "${{DOCKER_AUTH_CONFIG+x}}" ]; then auth=unset
 elif [ "$DOCKER_AUTH_CONFIG" = '{auth_config}' ]; then auth=expected
 else auth=other; fi
-printf '%s|%s|%s|%s\n' "$1" "$auth" "${{ANTITHESIS_PROFILE-unset}}" "${{SNOUTY_SETTINGS_PATH-unset}}" >> '{log}'
+printf '%s|%s|%s\n' "$1" "$auth" "${{SNOUTY_SETTINGS_PATH-unset}}" >> '{log}'
 case "$1" in
   push) echo 'latest: digest: sha256:pushed size: 1';;
   manifest) echo '{{"schemaVersion":2}}';;
@@ -1490,14 +1484,13 @@ esac
         let commands: Vec<&str> = log.iter().map(|fields| fields[0].as_str()).collect();
         assert_eq!(commands, ["push", "manifest", "manifest", "push"]);
         for fields in &log[..2] {
-            assert_eq!(fields[1..], ["expected", "acme", "launch.toml"]);
+            assert_eq!(fields[1..], ["expected", "launch.toml"]);
         }
         for fields in &log[2..] {
             assert_eq!(
                 fields[1..],
                 [
                     parent_auth_state(DOCKER_AUTH_CONFIG_ENV).to_string(),
-                    parent_var(ANTITHESIS_PROFILE_ENV_VAR_NAME),
                     parent_var(SNOUTY_SETTINGS_PATH_VAR_NAME)
                 ]
             );
@@ -1507,7 +1500,7 @@ esac
     /// On the push and the manifest round trip to the tenant registry, podman
     /// gets an auth file that sends it to the snouty credential helper, finds
     /// the helper, a link to snouty in the config dir, first on its `PATH`,
-    /// and gets the settings flags of the launch. Neither file holds the
+    /// and gets the settings flag of the launch. Neither file holds the
     /// secret, and the link replaces a stale link of a past launch. The auth
     /// file goes away with the runtime. Other round trips get none of this.
     #[test]
@@ -1527,7 +1520,7 @@ esac
 elif [ "$REGISTRY_AUTH_FILE" = '{auth_file}' ]; then auth=$(cat "$REGISTRY_AUTH_FILE")
 else auth=other; fi
 helper_dir=${{PATH%%:*}}
-printf '%s|%s|%s|%s|%s|%s\n' "$1" "$auth" "$helper_dir" "$(readlink "$helper_dir/{HELPER_NAME}")" "${{ANTITHESIS_PROFILE-unset}}" "${{SNOUTY_SETTINGS_PATH-unset}}" >> '{log}'
+printf '%s|%s|%s|%s|%s\n' "$1" "$auth" "$helper_dir" "$(readlink "$helper_dir/{HELPER_NAME}")" "${{SNOUTY_SETTINGS_PATH-unset}}" >> '{log}'
 case "$1" in
   push) for arg in "$@"; do case "$arg" in --digestfile=*) printf 'sha256:pushed' > "${{arg#--digestfile=}}";; esac; done;;
   manifest) echo '{{"manifests":[]}}';;
@@ -1562,20 +1555,14 @@ esac
             );
             assert_eq!(Path::new(&fields[2]), config_dir);
             assert_eq!(Path::new(&fields[3]), snouty);
-            assert_eq!(fields[4..], ["acme", "launch.toml"]);
+            assert_eq!(fields[4], "launch.toml");
         }
         assert!(!auth_file.exists(), "{}", auth_file.display());
         let parent_path = parent_var(PATH_ENV);
         for fields in &log[2..] {
             assert_eq!(fields[1], parent_auth_state(REGISTRY_AUTH_FILE_ENV));
             assert_eq!(fields[2], parent_path.split(':').next().unwrap());
-            assert_eq!(
-                fields[4..],
-                [
-                    parent_var(ANTITHESIS_PROFILE_ENV_VAR_NAME),
-                    parent_var(SNOUTY_SETTINGS_PATH_VAR_NAME)
-                ]
-            );
+            assert_eq!(fields[4], parent_var(SNOUTY_SETTINGS_PATH_VAR_NAME));
         }
     }
 

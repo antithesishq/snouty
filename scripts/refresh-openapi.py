@@ -4,9 +4,8 @@
 Auth and tenant come from whatever the environment already has, in the same
 order snouty itself resolves them:
 
-  API key:  $ANTITHESIS_API_KEY, else the api_key of the ApiKey profile
-            ($ANTITHESIS_PROFILE, default "default") in
-            ~/.config/snouty/credentials.toml
+  API key:  $ANTITHESIS_API_KEY, else the api_key of the ApiKey credential
+            in the [default] table of ~/.config/snouty/credentials.toml
   Base URL: $ANTITHESIS_BASE_URL, else https://{tenant}.antithesis.com with
             the tenant from $ANTITHESIS_TENANT, else from the tenant key in
             ~/.config/snouty/settings.toml
@@ -72,12 +71,11 @@ def resolve_api_key() -> str:
     if key := os.environ.get("ANTITHESIS_API_KEY"):
         return key
     credentials_path = snouty_config_dir() / "credentials.toml"
-    profile = os.environ.get("ANTITHESIS_PROFILE", "default")
-    entry = load_toml(credentials_path).get(profile, {})
+    entry = load_toml(credentials_path).get("default", {})
     if entry.get("type") == "ApiKey" and (key := entry.get("api_key")):
         return key
     raise fail(
-        f"no API key: set ANTITHESIS_API_KEY, or log in with an ApiKey profile ({credentials_path})"
+        f"no API key: set ANTITHESIS_API_KEY, or log in with an API key ({credentials_path})"
     )
 
 

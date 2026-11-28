@@ -9,7 +9,7 @@ Each tool runs its snouty command and returns what the command prints: stdout, t
 
 A tool call has no time limit and no output limit, and the result arrives only when the command ends. A call that waits until a run is ready, or that rewarms a moment, can take minutes. When the client asks for progress, a long call reports it, so a client that resets its time limit on progress does not end the call. When the client cancels a call, its command stops. Up to {{ t("--max-concurrent-calls")? }} tool calls run at the same time.
 
-{{ t("--settings")? }}, {{ t("--profile")? }} and {{ t("--verbose")? }}, and the ANTITHESIS_* environment variables, apply to every tool call as they do for the other commands.
+{{ t("--settings")? }} and {{ t("--verbose")? }}, and the ANTITHESIS_* environment variables, apply to every tool call as they do for the other commands.
 
 Example, to add snouty to Claude Code:
   claude mcp add snouty -- snouty mcp

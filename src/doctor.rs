@@ -9,8 +9,8 @@ use crate::api::{
     normalize_base_url,
 };
 use crate::auth::{
-    AuthenticationInfo, CredentialSource, CredentialStore, OidcFetchError, RenewalError,
-    SourcedCredential, basic_auth_next_step, keychain_entry_name, login_command, refuses_renewal,
+    AuthenticationInfo, CredentialSource, CredentialStore, KEYCHAIN_ENTRY_NAME, OidcFetchError,
+    RenewalError, SourcedCredential, basic_auth_next_step, refuses_renewal,
     rejected_credential_next_step,
 };
 use crate::compose;
@@ -282,17 +282,14 @@ fn docker_version_check(version: (u64, u64, u64)) -> Check {
 /// The container registry is only needed to build and push a config image
 /// (`snouty launch --config`), so a missing one is a warning, not a failure —
 /// read-only use (`snouty runs`, `snouty debug`) doesn't need it.
-fn registry_check(registry: Option<&Registry>, profile: Option<&str>) -> Check {
+fn registry_check(registry: Option<&Registry>) -> Check {
     match registry {
         Some(_) => Check::ok(CheckId::Registry, "container registry is set"),
         None => Check::warn(CheckId::Registry, "container registry is not set")
             .note(Level::Warning, "the registry is needed for `snouty launch`")
             .note(
                 Level::Note,
-                format!(
-                    "run {} to set it, or set ANTITHESIS_REGISTRY",
-                    login_command(profile)
-                ),
+                "run `snouty login` to set it, or set ANTITHESIS_REGISTRY",
             ),
     }
 }
@@ -305,12 +302,11 @@ fn registry_check(registry: Option<&Registry>, profile: Option<&str>) -> Check {
 fn other_registry_check(
     configured: &Tagged<Registry, SettingSource>,
     reported: &Registry,
-    profile: Option<&str>,
 ) -> Check {
     let switch = match configured.tag() {
         SettingSource::Env(var) => format!("set {var} to it"),
         SettingSource::File { path, .. } if path.kind == KnownPathKind::Global => {
-            format!("run {} to switch to it", login_command(profile))
+            "run `snouty login` to switch to it".to_owned()
         }
         SettingSource::File { path, key } => {
             format!("set `{key}` in {} to it", path.display())
@@ -328,12 +324,7 @@ fn other_registry_check(
         )
 }
 
-/// `selected` is the profile that the user selects, if any.
-fn authn_checks(
-    sources: &[SourcedCredential],
-    selected: Option<&str>,
-    github_actions: bool,
-) -> Vec<Check> {
+fn authn_checks(sources: &[SourcedCredential], github_actions: bool) -> Vec<Check> {
     let Some((credentials, behind)) = sources.split_first() else {
         return vec![missing_credentials_check(
             crate::auth::NO_CREDENTIALS_MESSAGE,
@@ -342,7 +333,7 @@ fn authn_checks(
     };
 
     // Only a credential in the environment hides one that the user expects:
-    // a stored credential hides just its fallbacks, the default profile and
+    // a stored credential hides just its fallbacks, the credentials file and
     // the GitHub Actions OIDC token. A blank API key cannot authenticate, so
     // it is nothing to fall back on.
     let (variables, hidden): (&[&str], Option<&SourcedCredential>) = match credentials.tag() {
@@ -360,35 +351,26 @@ fn authn_checks(
         AuthenticationInfo::GithubActionsOidc(_) => enrich_with_source(
             Check::ok(id, "GitHub Actions OIDC token provided"),
             credentials,
-            selected,
         ),
-        AuthenticationInfo::OAuth(_) => enrich_with_source(
-            Check::ok(id, "OAuth credentials used"),
-            credentials,
-            selected,
-        ),
+        AuthenticationInfo::OAuth(_) => {
+            enrich_with_source(Check::ok(id, "OAuth credentials used"), credentials)
+        }
         credential if credential.has_blank_api_key() => {
             let check = Check::fail(id, "the API key is empty")
                 .note(Level::Error, "an empty API key cannot authenticate");
             match credentials.tag() {
                 // The lookup rejects a blank environment key with
                 // `BlankApiKey`, which `collect_checks` reports.
-                CredentialSource::Environment { .. } => {
-                    enrich_with_source(check, credentials, selected)
-                        .note(Level::Note, crate::auth::BlankApiKey::SUGGESTION)
-                }
-                CredentialSource::Stored(store) => enrich_with_source(check, credentials, selected)
-                    .note(
-                        Level::Note,
-                        format!(
-                            "run {} to replace it with an API key",
-                            login_command(store.profile())
-                        ),
-                    ),
+                CredentialSource::Environment { .. } => enrich_with_source(check, credentials)
+                    .note(Level::Note, crate::auth::BlankApiKey::SUGGESTION),
+                CredentialSource::Stored(_) => enrich_with_source(check, credentials).note(
+                    Level::Note,
+                    "run `snouty login` to replace it with an API key",
+                ),
             }
         }
         AuthenticationInfo::ApiKey { .. } => {
-            enrich_with_source(Check::ok(id, "API key provided"), credentials, selected)
+            enrich_with_source(Check::ok(id, "API key provided"), credentials)
         }
         // A username and password that hide a credential the API accepts:
         // the one thing to do is free that credential (issue #292).
@@ -396,15 +378,10 @@ fn authn_checks(
             if let Some(hidden) = hidden
                 && !matches!(hidden.value(), AuthenticationInfo::Password { .. }) =>
         {
-            return vec![hidden_credential_check(
-                credentials,
-                variables,
-                hidden,
-                selected,
-            )];
+            return vec![hidden_credential_check(credentials, variables, hidden)];
         }
         AuthenticationInfo::Password { username, .. } => {
-            return vec![password_only_check(credentials, username, selected)];
+            return vec![password_only_check(credentials, username)];
         }
     };
 
@@ -420,10 +397,10 @@ fn authn_checks(
                 format!(
                     "snouty is using the {} from {}",
                     credentials.value(),
-                    describe_source(credentials.tag(), selected)
+                    describe_source(credentials.tag())
                 ),
             )
-            .note(Level::Note, unset_to_use(variables, hidden, selected)),
+            .note(Level::Note, unset_to_use(variables, hidden)),
         );
     }
     checks
@@ -452,7 +429,6 @@ fn hidden_credential_check(
     in_use: &SourcedCredential,
     variables: &[&str],
     hidden: &SourcedCredential,
-    selected: Option<&str>,
 ) -> Check {
     Check::warn(
         CheckId::credentials(in_use),
@@ -465,20 +441,16 @@ fn hidden_credential_check(
         Level::Warning,
         format!(
             "snouty uses the username and password from {}, which `snouty runs` refuses",
-            describe_source(in_use.tag(), selected)
+            describe_source(in_use.tag())
         ),
     )
-    .note(Level::Note, unset_to_use(variables, hidden, selected))
+    .note(Level::Note, unset_to_use(variables, hidden))
 }
 
 /// The single check for a username and password with no credential the API
 /// accepts behind them. It replaces the shortfall and password checks, which
 /// together suggested `snouty login` twice.
-fn password_only_check(
-    in_use: &SourcedCredential,
-    username: &str,
-    selected: Option<&str>,
-) -> Check {
+fn password_only_check(in_use: &SourcedCredential, username: &str) -> Check {
     enrich_with_source(
         Check::warn(
             CheckId::credentials(in_use),
@@ -491,53 +463,43 @@ fn password_only_check(
             "username/password is deprecated, and `snouty runs` and other API commands refuse it",
         ),
         in_use,
-        selected,
     )
-    .note(Level::Note, basic_auth_next_step(in_use.tag(), selected))
+    .note(Level::Note, basic_auth_next_step(in_use.tag()))
 }
 
 /// The one step that frees `hidden`, a stored credential that the
 /// environment variables `variables` hide.
-fn unset_to_use(variables: &[&str], hidden: &SourcedCredential, selected: Option<&str>) -> String {
+fn unset_to_use(variables: &[&str], hidden: &SourcedCredential) -> String {
     format!(
         "`unset {}` to use the {} in {}",
         variables.join(" "),
         hidden.value(),
-        describe_source(hidden.tag(), selected)
+        describe_source(hidden.tag())
     )
 }
 
 /// A phrase that reads after "read from" or after the name of a credential
 /// kind.
-fn describe_source(source: &CredentialSource, selected: Option<&str>) -> String {
+fn describe_source(source: &CredentialSource) -> String {
     match source {
         CredentialSource::Environment { variables } => format!(
             "the `{}` environment variable{}",
             variables.join("` and `"),
             if variables.len() == 1 { "" } else { "s" }
         ),
-        CredentialSource::Stored(CredentialStore::CredentialsFile { profile, .. }) => match profile
-        {
-            Some(p) => format!("the `{p}` profile of the credentials file"),
-            // A selected profile with no credential falls back to these.
-            None if selected.is_some() => "the default profile of the credentials file".to_owned(),
-            None => "the credentials file".to_owned(),
-        },
-        CredentialSource::Stored(CredentialStore::Keychain { profile }) => format!(
-            "system keychain entry named [{}]",
-            keychain_entry_name(profile.as_deref())
-        ),
+        CredentialSource::Stored(CredentialStore::CredentialsFile { .. }) => {
+            "the credentials file".to_owned()
+        }
+        CredentialSource::Stored(CredentialStore::Keychain) => {
+            format!("system keychain entry named [{KEYCHAIN_ENTRY_NAME}]")
+        }
     }
 }
 
-fn enrich_with_source(
-    check: Check,
-    credential: &SourcedCredential,
-    selected: Option<&str>,
-) -> Check {
+fn enrich_with_source(check: Check, credential: &SourcedCredential) -> Check {
     check.note(
         Level::Note,
-        format!("read from {}", describe_source(credential.tag(), selected)),
+        format!("read from {}", describe_source(credential.tag())),
     )
 }
 
@@ -599,16 +561,13 @@ fn collect_checks(settings: &Settings) -> (Vec<Check>, Option<SourcedCredential>
     // Required settings. tenant is needed by every command; registry is
     // launch-only, so a missing one is a warning.
     checks.push(tenant_check(settings.tenant()));
-    checks.push(registry_check(
-        settings.registry().map(Tagged::value),
-        settings.profile(),
-    ));
+    checks.push(registry_check(settings.registry().map(Tagged::value)));
 
     // Authentication (synchronous-only by design).
     let github_actions = crate::auth::in_github_actions();
-    let in_use = match AuthenticationInfo::available_ambient_credentials(settings.profile()) {
+    let in_use = match AuthenticationInfo::available_ambient_credentials() {
         Ok(sources) => {
-            checks.extend(authn_checks(&sources, settings.profile(), github_actions));
+            checks.extend(authn_checks(&sources, github_actions));
             sources.into_iter().next()
         }
         // A blank environment key hides every other credential, so its fix
@@ -719,12 +678,7 @@ fn release_floor_check(version: &ApiVersion, floor: &ReleaseFloor) -> Option<Che
 
 /// Map a `GET /api/version` probe into a check. Pure over the result so it
 /// can be unit-tested without the network.
-fn version_check(
-    host: &str,
-    in_use: &SourcedCredential,
-    profile: Option<&str>,
-    result: Result<ApiVersion>,
-) -> Check {
+fn version_check(host: &str, in_use: &SourcedCredential, result: Result<ApiVersion>) -> Check {
     let err = match result {
         Ok(v) => {
             return Check::ok(CheckId::Api, "Antithesis API reachable")
@@ -743,7 +697,7 @@ fn version_check(
         Some(status) if rejects_credential(status) => {
             Check::fail(CheckId::Api, "Antithesis API rejected authentication")
                 .note(Level::Error, format!("the API returned HTTP {status}"))
-                .note(Level::Note, rejected_credential_next_step(in_use, profile))
+                .note(Level::Note, rejected_credential_next_step(in_use))
         }
         Some(status) => Check::fail(CheckId::Api, "Antithesis API error").note(
             Level::Error,
@@ -819,7 +773,7 @@ pub async fn cmd_doctor(
                 if matches!(auth, AuthenticationInfo::OAuth(_))
                     && http_err.is_some_and(|e| e.status().is_none() && !e.is_decode())
                 {
-                    checks.push(version_check(&host, in_use, settings.profile(), Err(err)));
+                    checks.push(version_check(&host, in_use, Err(err)));
                 } else {
                     let check = checks
                         .iter_mut()
@@ -831,7 +785,7 @@ pub async fn cmd_doctor(
                         let renewal = err
                             .downcast_ref::<RenewalError>()
                             .expect("an OAuth refresh fails with a renewal error");
-                        (renewal.summary(), renewal.next_step())
+                        (renewal.summary(), renewal.next_step().to_owned())
                     } else {
                         let status = match err.downcast_ref::<OidcFetchError>() {
                             Some(oidc_err) => oidc_err.status,
@@ -892,11 +846,7 @@ pub async fn cmd_doctor(
                                             .iter_mut()
                                             .find(|c| c.id == CheckId::Registry)
                                             .expect("collect_checks reports the registry");
-                                        *check = other_registry_check(
-                                            configured,
-                                            &reported,
-                                            settings.profile(),
-                                        );
+                                        *check = other_registry_check(configured, &reported);
                                     }
                                     Ok(_) => {}
                                     Err(err) => debug!("the tenant's registry is invalid: {err}"),
@@ -914,7 +864,7 @@ pub async fn cmd_doctor(
                 api_failed = version
                     .as_ref()
                     .is_err_and(|err| err.downcast_ref::<reqwest::Error>().is_some());
-                checks.push(version_check(&host, in_use, settings.profile(), version));
+                checks.push(version_check(&host, in_use, version));
             }
         }
 
@@ -1021,7 +971,6 @@ mod tests {
                 },
                 vec![API_KEY_VAR_NAME],
             )],
-            None,
             false,
         );
         assert_eq!(checks.len(), 1);
@@ -1029,52 +978,12 @@ mod tests {
         assert!(checks[0].message.contains("API key provided"));
     }
 
-    /// A credential read from a file names its profile, `default` included,
-    /// and the default profile when a selected profile falls back to it. It
-    /// does not name the path of the file.
-    #[test]
-    fn auth_from_a_file_names_a_named_profile_but_no_path() {
-        let note_for = |profile: Option<&str>, selected: Option<&str>| {
-            let checks = authn_checks(
-                &[from_file(
-                    AuthenticationInfo::ApiKey {
-                        api_key: FAKE_API_KEY_A.to_owned(),
-                    },
-                    profile,
-                )],
-                selected,
-                false,
-            );
-            checks[0]
-                .notes
-                .iter()
-                .map(|n| n.text.clone())
-                .collect::<Vec<_>>()
-                .join(" ")
-        };
-        let note = |profile| note_for(profile, profile);
-        assert_eq!(note(None), "read from the credentials file");
-        // `--profile default` selects `[profile.default]`, not the top level.
-        assert_eq!(
-            note(Some("default")),
-            "read from the `default` profile of the credentials file"
-        );
-        assert_eq!(
-            note(Some("prod")),
-            "read from the `prod` profile of the credentials file"
-        );
-        assert_eq!(
-            note_for(None, Some("prod")),
-            "read from the default profile of the credentials file"
-        );
-    }
-
     /// Only a username and password: one warning, whose next step depends on
     /// where they came from.
     #[test]
     fn a_password_alone_is_one_check_with_one_next_step() {
-        let notes = |source: SourcedCredential, selected: Option<&str>| {
-            let checks = authn_checks(&[source], selected, false);
+        let notes = |source: SourcedCredential| {
+            let checks = authn_checks(&[source], false);
             assert_eq!(
                 checks.len(),
                 1,
@@ -1105,7 +1014,7 @@ mod tests {
                 .to_owned(),
         );
         assert_eq!(
-            notes(env_password_source(), None),
+            notes(env_password_source()),
             [
                 deprecated.clone(),
                 (
@@ -1123,18 +1032,12 @@ mod tests {
             ]
         );
         assert_eq!(
-            notes(
-                from_file(
-                    AuthenticationInfo::Password {
-                        username: "user".to_owned(),
-                        password: FAKE_PASSWORD.to_owned(),
-                    },
-                    None
-                ),
-                None
-            ),
+            notes(from_file(AuthenticationInfo::Password {
+                username: "user".to_owned(),
+                password: FAKE_PASSWORD.to_owned(),
+            })),
             [
-                deprecated,
+                deprecated.clone(),
                 (Level::Note, "read from the credentials file".to_owned()),
                 (
                     Level::Note,
@@ -1142,24 +1045,22 @@ mod tests {
                 ),
             ]
         );
-        // A bare `snouty login` writes the default profile, so the next step
-        // names the selected profile.
-        let keychain = notes(
-            from_keychain(
-                AuthenticationInfo::Password {
-                    username: "user".to_owned(),
-                    password: FAKE_PASSWORD.to_owned(),
-                },
-                Some("prod"),
-            ),
-            Some("prod"),
-        );
         assert_eq!(
-            keychain.last().unwrap(),
-            &(
-                Level::Note,
-                "run `snouty login --profile prod` to replace it with an API key".to_owned()
-            )
+            notes(from_keychain(AuthenticationInfo::Password {
+                username: "user".to_owned(),
+                password: FAKE_PASSWORD.to_owned(),
+            })),
+            [
+                deprecated,
+                (
+                    Level::Note,
+                    "read from system keychain entry named [_default_]".to_owned()
+                ),
+                (
+                    Level::Note,
+                    "run `snouty login` to replace it with an API key".to_owned()
+                ),
+            ]
         );
     }
 
@@ -1194,7 +1095,7 @@ mod tests {
     /// A user who meets both messages reads one wording, not two.
     #[test]
     fn auth_no_source_reports_the_shared_no_credentials_message() {
-        let checks = authn_checks(&[], None, false);
+        let checks = authn_checks(&[], false);
         assert_eq!(checks.len(), 1);
         assert_eq!(checks[0].status, Status::Error);
         assert_eq!(checks[0].message, crate::auth::NO_CREDENTIALS_MESSAGE);
@@ -1205,7 +1106,7 @@ mod tests {
     #[test]
     fn no_credential_in_github_actions_names_the_oidc_permission() {
         let notes = |github_actions| {
-            authn_checks(&[], None, github_actions)[0]
+            authn_checks(&[], github_actions)[0]
                 .notes
                 .iter()
                 .map(|n| n.text.clone())
@@ -1224,17 +1125,14 @@ mod tests {
         value.with_tag(CredentialSource::Environment { variables })
     }
 
-    fn from_file(value: AuthenticationInfo, profile: Option<&str>) -> SourcedCredential {
+    fn from_file(value: AuthenticationInfo) -> SourcedCredential {
         value.with_tag(CredentialSource::Stored(CredentialStore::CredentialsFile {
             path: std::path::PathBuf::from("/tmp/credentials.toml"),
-            profile: profile.map(str::to_owned),
         }))
     }
 
-    fn from_keychain(value: AuthenticationInfo, profile: Option<&str>) -> SourcedCredential {
-        value.with_tag(CredentialSource::Stored(CredentialStore::Keychain {
-            profile: profile.map(str::to_owned),
-        }))
+    fn from_keychain(value: AuthenticationInfo) -> SourcedCredential {
+        value.with_tag(CredentialSource::Stored(CredentialStore::Keychain))
     }
 
     fn env_password_source() -> SourcedCredential {
@@ -1248,17 +1146,14 @@ mod tests {
     }
 
     fn file_api_key_source() -> SourcedCredential {
-        from_file(
-            AuthenticationInfo::ApiKey {
-                api_key: FAKE_API_KEY_A.to_owned(),
-            },
-            None,
-        )
+        from_file(AuthenticationInfo::ApiKey {
+            api_key: FAKE_API_KEY_A.to_owned(),
+        })
     }
 
     #[test]
     fn one_credential_source_reports_no_conflict() {
-        let checks = authn_checks(&[file_api_key_source()], None, false);
+        let checks = authn_checks(&[file_api_key_source()], false);
         assert!(!checks.iter().any(|c| c.id == CheckId::CredentialSources));
     }
 
@@ -1267,7 +1162,7 @@ mod tests {
     /// problem and the one step that fixes it.
     #[test]
     fn a_password_hiding_an_api_key_is_one_check_with_one_next_step() {
-        let checks = authn_checks(&[env_password_source(), file_api_key_source()], None, false);
+        let checks = authn_checks(&[env_password_source(), file_api_key_source()], false);
         assert_eq!(
             checks.len(),
             1,
@@ -1335,7 +1230,7 @@ mod tests {
     /// step is to unset it.
     #[test]
     fn an_environment_credential_that_hides_a_stored_one_is_a_warning() {
-        let checks = authn_checks(&[env_api_key_source(), file_api_key_source()], None, false);
+        let checks = authn_checks(&[env_api_key_source(), file_api_key_source()], false);
         let check = checks
             .iter()
             .find(|c| c.id == CheckId::CredentialSources)
@@ -1348,20 +1243,20 @@ mod tests {
         );
     }
 
-    /// The default profile and the GitHub Actions OIDC token are fallbacks,
+    /// The credentials file and the GitHub Actions OIDC token are fallbacks,
     /// so a credential that hides only them is no conflict.
     #[test]
     fn a_credential_that_hides_only_its_fallbacks_is_no_conflict() {
         for sources in [
             vec![
-                from_keychain(api_key(FAKE_API_KEY_A), Some("prod")),
-                from_keychain(api_key(FAKE_API_KEY_B), None),
+                from_keychain(api_key(FAKE_API_KEY_A)),
+                from_file(api_key(FAKE_API_KEY_B)),
                 oidc_source(),
             ],
             vec![file_api_key_source(), oidc_source()],
             vec![env_api_key_source(), oidc_source()],
         ] {
-            let checks = authn_checks(&sources, None, false);
+            let checks = authn_checks(&sources, false);
             assert_eq!(
                 checks.iter().map(|c| c.status).collect::<Vec<_>>(),
                 [Status::Ok],
@@ -1371,8 +1266,8 @@ mod tests {
         }
     }
 
-    /// A stored credential that cannot work is replaced with `snouty login`
-    /// for its profile, also when the default profile holds a working one.
+    /// A stored credential that cannot work is replaced with `snouty login`,
+    /// also when the credentials file holds a working one.
     #[test]
     fn a_stored_credential_that_cannot_work_is_replaced_by_login() {
         let password = AuthenticationInfo::Password {
@@ -1381,18 +1276,14 @@ mod tests {
         };
         for (in_use, status) in [(password, Status::Warn), (api_key(""), Status::Error)] {
             let checks = authn_checks(
-                &[
-                    from_file(in_use, Some("prod")),
-                    from_file(api_key(FAKE_API_KEY_A), None),
-                ],
-                Some("prod"),
+                &[from_keychain(in_use), from_file(api_key(FAKE_API_KEY_A))],
                 false,
             );
             assert_eq!(checks.len(), 1);
             assert_eq!(checks[0].status, status);
             assert_eq!(
                 checks[0].notes.last().unwrap().text,
-                "run `snouty login --profile prod` to replace it with an API key"
+                "run `snouty login` to replace it with an API key"
             );
         }
     }
@@ -1427,7 +1318,7 @@ mod tests {
 
     #[test]
     fn registry_check_is_ok_when_resolved() {
-        let check = registry_check(Some(&registry("registry.acme.antithesis.com/team")), None);
+        let check = registry_check(Some(&registry("registry.acme.antithesis.com/team")));
         assert_eq!(check.status, Status::Ok);
     }
 
@@ -1435,9 +1326,8 @@ mod tests {
     fn another_registry_is_a_suggestion_that_names_where_to_switch() {
         let configured = registry("proxy.example.com/acme");
         let tenant = registry("registry.acme.antithesis.com");
-        let next_step = |source: SettingSource, profile: Option<&str>| {
-            let check =
-                other_registry_check(&configured.clone().with_tag(source), &tenant, profile);
+        let next_step = |source: SettingSource| {
+            let check = other_registry_check(&configured.clone().with_tag(source), &tenant);
             assert_eq!(check.status, Status::Ok);
             assert!(check.notes.iter().all(|note| note.level == Level::Note));
             assert_eq!(
@@ -1447,34 +1337,31 @@ mod tests {
             check.notes[1].text.clone()
         };
         assert_eq!(
-            next_step(
-                SettingSource::File {
-                    path: KnownPath {
-                        kind: KnownPathKind::Global,
-                        path: "/home/.config/snouty/settings.toml".into(),
-                    },
-                    key: "profile.prod.registry".into(),
+            next_step(SettingSource::File {
+                path: KnownPath {
+                    kind: KnownPathKind::Global,
+                    path: "/home/.config/snouty/settings.toml".into(),
                 },
-                Some("prod")
-            ),
-            "you can keep using `proxy.example.com/acme`, or run `snouty login --profile prod` to switch to it"
+                key: "registry".into(),
+            }),
+            "you can keep using `proxy.example.com/acme`, or run `snouty login` to switch to it"
         );
         // `snouty login` writes the global settings file, which the
-        // environment and a project settings file override.
+        // environment and a named settings file override.
         assert_eq!(
-            next_step(SettingSource::Env("ANTITHESIS_REGISTRY"), Some("prod")),
+            next_step(SettingSource::Env("ANTITHESIS_REGISTRY")),
             "you can keep using `proxy.example.com/acme`, or set ANTITHESIS_REGISTRY to it"
         );
-        let project = SettingSource::File {
+        let named = SettingSource::File {
             path: KnownPath {
-                kind: KnownPathKind::Project { explicit: false },
-                path: "/work/.snouty.toml".into(),
+                kind: KnownPathKind::Project,
+                path: "/work/settings.toml".into(),
             },
             key: "registry".into(),
         };
         assert_eq!(
-            next_step(project, None),
-            "you can keep using `proxy.example.com/acme`, or set `registry` in /work/.snouty.toml to it"
+            next_step(named),
+            "you can keep using `proxy.example.com/acme`, or set `registry` in /work/settings.toml to it"
         );
     }
 
@@ -1482,12 +1369,12 @@ mod tests {
     fn registry_check_only_warns_when_missing() {
         // Following main's #147 decision: the registry is launch-only, so a
         // missing one is a warning, not a failure.
-        let check = registry_check(None, Some("prod"));
+        let check = registry_check(None);
         assert_eq!(check.status, Status::Warn);
         assert!(check.notes.iter().any(|n| n.text.contains("snouty launch")));
         assert_eq!(
             check.notes[1].text,
-            "run `snouty login --profile prod` to set it, or set ANTITHESIS_REGISTRY"
+            "run `snouty login` to set it, or set ANTITHESIS_REGISTRY"
         );
     }
 
@@ -1583,7 +1470,6 @@ mod tests {
         let check = version_check(
             "tenant.antithesis.com",
             &env_api_key_source(),
-            None,
             Ok(ApiVersion::new("v1".into(), "62.0".into())),
         );
         assert_eq!(check.status, Status::Ok);
@@ -1612,7 +1498,6 @@ mod tests {
             let check = version_check(
                 "tenant.antithesis.com",
                 &env_api_key_source(),
-                None,
                 Err(served(status)),
             );
             assert_eq!(check.status, Status::Error);
@@ -1631,7 +1516,6 @@ mod tests {
         let check = version_check(
             "tenant.antithesis.com",
             &env_api_key_source(),
-            None,
             Err(served(403)),
         );
         let next_step = check
@@ -1676,7 +1560,6 @@ mod tests {
         let check = version_check(
             "tenant.antithesis.com",
             &env_api_key_source(),
-            None,
             Err(color_eyre::eyre::eyre!(
                 "API returned an invalid response body"
             )),
@@ -1703,7 +1586,6 @@ mod tests {
         let check = version_check(
             "tenant.antithesis.com",
             &env_api_key_source(),
-            None,
             Err(color_eyre::Report::new(refused).wrap_err("failed to contact API")),
         );
         assert_eq!(check.status, Status::Error);
@@ -1720,7 +1602,6 @@ mod tests {
             let check = version_check(
                 "tenant.antithesis.com",
                 &env_api_key_source(),
-                None,
                 Err(served(status)),
             );
             assert_eq!(check.status, Status::Error);
@@ -1784,7 +1665,7 @@ mod tests {
             ),
         ];
         for (sources, status, kind) in cases {
-            let checks = authn_checks(&sources, None, false);
+            let checks = authn_checks(&sources, false);
             assert_eq!(checks[0].id, CheckId::Credentials { kind });
             assert_eq!(checks[0].status, status);
         }

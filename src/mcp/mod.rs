@@ -50,11 +50,10 @@ documentation. Each tool returns the detailed text output of its command. Set it
 to true only when you need a field that this output does not show: the JSON is usually several \
 times larger. tool_help returns the full help of a tool.";
 
-/// The server's own options. Every tool call passes `settings`, `profile`
-/// and `verbose` to its child. A client cannot set them.
+/// The server's own options. Every tool call passes `settings` and `verbose`
+/// to its child. A client cannot set them.
 pub struct Globals {
     pub settings: Option<PathBuf>,
-    pub profile: Option<String>,
     pub verbose: bool,
     pub max_concurrent_calls: NonZeroUsize,
 }

@@ -5,15 +5,12 @@ Print the settings that snouty resolved
 
 Prints each setting with the value that snouty resolved for it. For each
 setting, snouty uses the first value that it finds: the environment variable,
-the selected profile in the project settings file, the selected profile in the
-global settings file, the top-level value in the project settings file, then the
-top-level value in the global settings file.
+then the settings file that you name with --settings or SNOUTY_SETTINGS_PATH,
+then the global settings file.
 
-Then it lists the settings files that snouty read: the project settings file,
-which overrides the global one, then the global settings file. After them it
-lists the credentials file, credentials.toml, and the trust file, trust.toml,
-when they exist. The trust file records the project settings files that you
-trusted or denied.
+Then it lists the settings files that snouty read: the settings file that you
+name, which overrides the global one, then the global settings file. After them
+it lists the credentials file, credentials.toml, when it exists.
 
 `api_cache_max_file_size` is the largest API response that snouty caches. The
 text output shows it with a unit, such as `10.0 MiB`. The JSON value is a number
@@ -21,12 +18,12 @@ of bytes.
 
 With --json, the output is one object. `settings` holds each setting, with null
 for a setting that is not set and has no default. `files` lists the same files
-in the same order, each with its `type` (`project`, `global`, `credentials` or
-`trust`) and `path`.
+in the same order, each with its `type` (`project`, `global` or `credentials`)
+and `path`.
 
 Examples:
   snouty settings show
-  snouty --profile staging settings show
+  snouty --settings path/to/settings.toml settings show
 
 Usage: snouty settings show [OPTIONS]
 
@@ -41,8 +38,5 @@ Options:
           Log API requests to stderr (authentication tokens redacted)
 
       --settings <SETTINGS>
-          Path to the snouty settings file (default: ./.snouty.toml; overrides
-          SNOUTY_SETTINGS_PATH)
-
-      --profile <PROFILE>
-          Settings profile to select (overrides ANTITHESIS_PROFILE)
+          Path to a settings file that overrides the global settings file
+          (overrides SNOUTY_SETTINGS_PATH)

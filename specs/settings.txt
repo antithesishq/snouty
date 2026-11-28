@@ -1,78 +1,59 @@
 # Settings resolution
 #
-# Snouty resolves each setting with precedence: environment variable, then the
-# active profile, then top-level defaults — checking the project settings file
-# (.snouty.toml) before the global one. `snouty settings show` prints the fully
-# resolved values, so we drive resolution by setting env/flags/files and reading
-# the table back. Each layer below uses a distinct value, so the resolved value
-# alone proves which layer won. Each row is `<setting>  <value>`.
+# Snouty resolves each setting with precedence: environment variable, then
+# the file that --settings or SNOUTY_SETTINGS_PATH names, then the global
+# settings file. `snouty settings show` prints the resolved values. Each layer
+# below uses a distinct value, so the resolved value alone proves which layer
+# won. Each row is `<setting>  <value>`.
 
-# The project file is used only once the user trusts it (see
-# config_trust.txt).
-snouty settings trust
-
-# 1. tenant/registry come from the project .snouty.toml in the working
-#    directory (top-level defaults).
+# 1. snouty reads no settings file in the working directory.
 snouty settings show
-stdout 'tenant.*acme'
-stdout 'registry.*acme/repo'
+stdout '^tenant +not set$'
 
-# 2. A profile selected with --profile overrides the top-level default; the
-#    active profile is also named in its own row.
-snouty --profile staging settings show
-stdout 'profile.*staging'
-stdout 'tenant.*staging-tenant'
-
-# 3. An explicit --settings file is read instead of ./.snouty.toml.
+# 2. An explicit --settings file is read, and overrides the global file.
+mkdir xdg-config-isolation/snouty
+cp global.toml xdg-config-isolation/snouty/settings.toml
+snouty settings show
+stdout 'tenant.*global-tenant'
+stdout 'registry.*global/repo'
 snouty --settings other.toml settings show
 stdout 'tenant.*other-tenant'
+stdout 'registry.*global/repo'
 
-# 4. The --profile flag wins over ANTITHESIS_PROFILE.
-env ANTITHESIS_PROFILE=staging
-snouty --profile prod settings show
-stdout 'tenant.*prod-tenant'
-
-# 5. An environment variable overrides everything else (profile prod is still
-#    set, but the env var wins).
+# 3. An environment variable overrides every file.
 env ANTITHESIS_TENANT=from-env
-snouty settings show
+snouty --settings other.toml settings show
 stdout 'tenant.*from-env'
 
-# 6. The container engine override is reported in the table.
+# 4. The container engine override is reported in the table.
 env SNOUTY_CONTAINER_ENGINE=podman
 snouty settings show
 stdout 'container_engine.*podman'
 
-# 7. The update channel is reported in the table; unset resolves to stable.
+# 5. The update channel is reported in the table; unset resolves to stable.
 snouty settings show
 stdout 'update_channel.*stable'
 env SNOUTY_UPDATE_CHANNEL=unstable
 snouty settings show
 stdout 'update_channel.*unstable'
 
-# 8. SNOUTY_SETTINGS_PATH selects the project file in place of ./.snouty.toml.
-#    Observed via registry, since no earlier step set ANTITHESIS_REGISTRY
-#    (ANTITHESIS_TENANT is already pinned from step 5, so tenant won't show it).
+# 6. SNOUTY_SETTINGS_PATH names the settings file, and the --settings flag
+#    wins over it.
 env SNOUTY_SETTINGS_PATH=env-settings.toml
 snouty settings show
 stdout 'registry.*env-path-repo'
-
-# 9. The --settings flag wins over SNOUTY_SETTINGS_PATH.
-snouty --settings other.toml settings show
+snouty --settings other-registry.toml settings show
 stdout 'registry.*other/repo'
 
-# 10. `repository` is an alias for `registry`, and loads as the registry.
-#     When a table holds both keys, `registry` wins. A profile with the alias
-#     still wins over a top-level `registry`.
+# 7. `repository` is an alias for `registry`, and loads as the registry.
+#    When a file holds both keys, `registry` wins.
 snouty --settings old-key.toml settings show
 stdout '^registry +old-key$'
 snouty --settings both-keys.toml settings show
 stdout '^registry +new-key$'
-snouty --settings both-keys.toml --profile old settings show
-stdout '^registry +old-profile$'
 
-# 11. ANTITHESIS_REPOSITORY, an alias for ANTITHESIS_REGISTRY, loads,
-#     and wins over the files. When both are set, ANTITHESIS_REGISTRY wins.
+# 8. ANTITHESIS_REPOSITORY, an alias for ANTITHESIS_REGISTRY, loads,
+#    and wins over the files. When both are set, ANTITHESIS_REGISTRY wins.
 env ANTITHESIS_REPOSITORY=old-env
 snouty --settings both-keys.toml settings show
 stdout '^registry +old-env$'
@@ -80,17 +61,25 @@ env ANTITHESIS_REGISTRY=new-env
 snouty --settings both-keys.toml settings show
 stdout '^registry +new-env$'
 
+# 9. The --profile flag no longer exists.
+! snouty --profile prod settings show
+stderr 'unexpected argument .--profile.'
+
+# 10. ANTITHESIS_PROFILE fails every command that reads the settings.
+env ANTITHESIS_PROFILE=prod
+! snouty settings show
+stderr 'unset ANTITHESIS_PROFILE'
+stderr -literal 'name that file with --settings'
+env ANTITHESIS_PROFILE=
+
 -- .snouty.toml --
 tenant = "acme"
-registry = "acme/repo"
-
-[profile.staging]
-tenant = "staging-tenant"
-
-[profile.prod]
-tenant = "prod-tenant"
+-- global.toml --
+tenant = "global-tenant"
+registry = "global/repo"
 -- other.toml --
 tenant = "other-tenant"
+-- other-registry.toml --
 registry = "other/repo"
 -- env-settings.toml --
 registry = "env-path-repo"
@@ -99,6 +88,3 @@ repository = "old-key"
 -- both-keys.toml --
 repository = "old-key"
 registry = "new-key"
-
-[profile.old]
-repository = "old-profile"

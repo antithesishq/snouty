@@ -90,18 +90,6 @@ stderr 'This command does not accept username/password authentication.*'
 stderr -literal 'run `snouty login` to replace it with an API key'
 ! stderr 'unset'
 
-# The login for a password in a named profile names that profile.
-! snouty --profile prod runs
-stderr -literal 'run `snouty login --profile prod` to replace it with an API key'
-
-# With a named profile, the login for an exported password names the profile.
-env ANTITHESIS_USERNAME=testuser
-set-env ANTITHESIS_PASSWORD ${FAKE_PASSWORD}
-! snouty --profile prod runs
-stderr -literal 'run `snouty login --profile prod` to store an API key, then `unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD`'
-env ANTITHESIS_USERNAME=
-env ANTITHESIS_PASSWORD=
-
 # On success, the command fetches all pages via next_cursor and prints a table
 # with relative timestamps and short status words.
 mock-runs-server
@@ -1360,10 +1348,6 @@ refresh_token = "${FAKE_REFRESH_TOKEN_A}"
 
 -- stored_password/.config/snouty/credentials.toml --
 [default]
-type = "Password"
-username = "${FAKE_USERNAME}"
-password = "${FAKE_PASSWORD}"
-[profile.prod]
 type = "Password"
 username = "${FAKE_USERNAME}"
 password = "${FAKE_PASSWORD}"

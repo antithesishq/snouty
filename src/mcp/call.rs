@@ -91,9 +91,6 @@ pub(crate) fn command_args(
         flag.push(settings);
         argv.push(flag);
     }
-    if let Some(profile) = &globals.profile {
-        argv.push(format!("--profile={profile}").into());
-    }
     argv.extend(tool.path().iter().map(OsString::from));
     argv.extend(options);
     let separator = argv.len();
@@ -168,7 +165,6 @@ mod tests {
     fn globals() -> Globals {
         Globals {
             settings: None,
-            profile: None,
             verbose: false,
             max_concurrent_calls: NonZeroUsize::new(8).unwrap(),
         }
@@ -193,7 +189,7 @@ mod tests {
         let value = tc.draw(generators::text().exclude_characters("\0"));
         let argv = args(ToolName::RunsList, &globals(), json!({ "launcher": value }));
         let cli = parse(argv.unwrap());
-        assert!(!cli.json && cli.settings.is_none() && cli.profile.is_none());
+        assert!(!cli.json && cli.settings.is_none());
         let Commands::Runs {
             command: Some(RunsCommands::List(args)),
         } = cli.command
@@ -212,7 +208,7 @@ mod tests {
             "run_id": "r", "input_hash": "-1", "vtime": 1.5, "script": script,
         });
         let cli = parse(args(ToolName::RunsExec, &globals(), call).unwrap());
-        assert!(!cli.json && cli.settings.is_none() && cli.profile.is_none());
+        assert!(!cli.json && cli.settings.is_none());
         let Commands::Runs {
             command:
                 Some(RunsCommands::Exec {
@@ -232,7 +228,6 @@ mod tests {
     fn the_server_globals_reach_the_child() {
         let globals = Globals {
             settings: Some("s.toml".into()),
-            profile: Some("p".to_owned()),
             verbose: true,
             max_concurrent_calls: NonZeroUsize::new(1).unwrap(),
         };
@@ -241,7 +236,6 @@ mod tests {
             cli.settings.as_deref(),
             Some(std::path::Path::new("s.toml"))
         );
-        assert_eq!(cli.profile.as_deref(), Some("p"));
         assert!(cli.verbose);
     }
 

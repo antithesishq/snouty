@@ -162,12 +162,13 @@ mock-runs-server
 [!staging] snouty --json runs usage
 [!staging] ! stdout .
 
-# A run from the usage list has a row of its own. An unknown run fails the
-# command, after the rows of the other runs.
+# A run has a row of its own. An unknown run fails the command, after the
+# rows of the other runs.
 mock-runs-server
 [!staging] snouty --json runs usage --after 2026-03-02 --before 2026-03-04
-[staging] snouty --json runs usage --after '3 months ago'
-env_from_json 0 run_id
+[!staging] env_from_json 0 run_id
+[staging] snouty --json runs list --status completed
+[staging] env_from_json_find run_id status=completed -- --verbose runs usage $R_run_id
 snouty runs usage ${R_run_id}
 stdout '^RUN ID +STARTED +ENDED +COMPUTE HOURS$'
 stdout '^${R_run_id@R} '

@@ -182,9 +182,7 @@ stderr 'the basic_k8s_test launcher requires a config image'
 ! snouty launch --max-compute-hours 24
 stderr 'the basic_test launcher requires a config image'
 
-# The command authenticates with the Antithesis API using either
-#    ANTITHESIS_API_KEY and ANTITHESIS_TENANT, or
-#    ANTITHESIS_USERNAME, ANTITHESIS_PASSWORD, and ANTITHESIS_TENANT.
+# Without a credential, the command fails.
 ! snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 24
 stderr 'No Antithesis credentials found.*'
 
@@ -251,25 +249,6 @@ stderr '"attrs.agent_session_id": "other"'
 env CLAUDECODE=
 env AI_AGENT=
 env CLAUDE_CODE_SESSION_ID=
-
-# Username/password authentication still works for the launch endpoints, but it
-# is deprecated: a warning on stderr steers the user to `snouty login`. The
-# mock-server directive configures username/password credentials.
-mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 24 --source ci-pipeline
-stderr 'warning: username/password authentication is deprecated'
-stderr 'snouty login'
-stdout 'Test run started: run_id run-123'
-
-# With an API key configured, no deprecation warning is shown. (An empty env
-# value means unset, so the last line restores username/password auth for the
-# rest of the file.)
-mock-server 200 '{"message":"Success","runId":"run-123"}'
-set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
-snouty launch --launcher basic_test --config-image config:latest --max-compute-hours 24 --source ci-pipeline
-! stderr 'deprecated'
-stdout 'Test run started: run_id run-123'
-env ANTITHESIS_API_KEY=
 
 # With --json, snouty prints its own envelope: the run id, and nothing else.
 # The launch response's body-level statusCode is deliberately not re-exported
@@ -401,13 +380,12 @@ snouty run --launcher basic_test --config-image config:latest --max-compute-hour
 stderr 'snouty run.*is deprecated.*snouty launch'
 
 # Without --launcher, the run goes to the basic_test launcher. The --verbose
-# log names the auth scheme, but no part of the username and password.
+# log names the auth scheme, but no part of the API key.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty --verbose launch --config-image config:latest --max-compute-hours 24
 stderr '^> POST .*/api/v1/launch/basic_test$'
-stderr '^> authorization: Basic \[redacted\]$'
-! stderr 'dGVz'
-! stderr '${FAKE_PASSWORD@R}'
+stderr '^> authorization: Bearer \[redacted\]$'
+! stderr '${FAKE_API_KEY_A@R}'
 stdout 'Test run started: run_id run-123'
 
 # --launcher selects the launcher.

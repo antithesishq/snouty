@@ -3,10 +3,7 @@
 # When the registry setting names the tenant registry,
 # registry.<tenant>.antithesis.com, snouty gives the registry secret to the
 # container runtime when it pushes. The secret is an API key, a GitHub Actions
-# OIDC token, or an OAuth token, with the username snouty-token. The registry
-# does not accept a username and password, so with it snouty gives no
-# credential, and the runtime pushes with its own credentials, as for any
-# other registry.
+# OIDC token, or an OAuth token, with the username snouty-token.
 #
 # Docker reads the credential from DOCKER_AUTH_CONFIG. Only Docker 28.3.0 and
 # later read that variable, and an older Docker pushes with the credentials
@@ -105,19 +102,6 @@ cd .
 env ANTITHESIS_TENANT=acme
 env SNOUTY_CONTAINER_ENGINE=docker
 
-# The tenant registry does not accept a username and password, so snouty
-# gives no credential, and the runtime pushes with its own.
-env ANTITHESIS_REGISTRY=registry.acme.antithesis.com/repo
-env ANTITHESIS_API_KEY=
-set-env ANTITHESIS_USERNAME ${FAKE_USERNAME}
-set-env ANTITHESIS_PASSWORD ${FAKE_PASSWORD}
-! snouty launch --launcher basic_k8s_test -c k8s_config
-stderr 'fake docker: push registry.acme.antithesis.com/repo/snouty-config:\S+ REGISTRY_AUTH_FILE=\[\] DOCKER_AUTH_CONFIG=\[\]'
-! stderr 'container registry does not accept'
-env ANTITHESIS_USERNAME=
-env ANTITHESIS_PASSWORD=
-set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
-
 # A registry setting that names a different registry, or the tenant registry of a
 # different tenant, pushes with no credential from snouty.
 env ANTITHESIS_REGISTRY=registry.example.com/repo
@@ -179,20 +163,6 @@ set-env ACTIONS_ID_TOKEN_REQUEST_URL ${ANTITHESIS_BASE_URL}/no-such-endpoint?api
 ! snouty launch --launcher basic_k8s_test -c k8s_config
 stderr 'failed to get a GitHub Actions OIDC token: .*answered [0-9]{3} [^:]*: [^{]'
 ! stderr 'Building config image'
-
-# The launch resolves the credential once, so a username and password warn
-# once, also when the launch both pushes and sends the run. The mock server
-# refuses the password, after the launch has sent the run.
-isolate-home password_launch
-env ACTIONS_ID_TOKEN_REQUEST_URL=
-env ACTIONS_ID_TOKEN_REQUEST_TOKEN=
-set-env ANTITHESIS_USERNAME ${FAKE_USERNAME}
-set-env ANTITHESIS_PASSWORD ${FAKE_PASSWORD}
-env STUB_PUSH_OK=1
-! snouty launch --launcher basic_k8s_test -c k8s_config
-stderr 'Config image pushed successfully'
-stderr 'Requesting Antithesis test run'
-stderr -count=1 'support will be removed in a future release'
 
 -- oauth/.config/snouty/credentials.toml --
 [default]

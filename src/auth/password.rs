@@ -1,77 +1,60 @@
-//! Username and password credentials, and the policy for their deprecation.
+//! Username and password credentials, which snouty no longer accepts. It
+//! finds them only to name the fix.
 
-use color_eyre::{Section, eyre::Result};
+use color_eyre::{Section, eyre::Report};
 
-use super::{AuthenticationInfo, CredentialSource, SourcedCredential, login_command};
-use crate::error::user_error;
+use super::login_command;
 
 pub(crate) const USERNAME_VAR_NAME: &str = "ANTITHESIS_USERNAME";
 pub(crate) const PASSWORD_VAR_NAME: &str = "ANTITHESIS_PASSWORD";
 
-/// How a command treats username/password credentials when ambient
-/// resolution finds them. The other credential kinds are always accepted.
-#[derive(Clone, Copy)]
-pub(crate) enum PasswordPolicy {
-    /// Fail with a friendly error: every endpoint other than the
-    /// launch endpoints answers username/password with an opaque 403.
-    Reject,
-    /// Accept them and print the deprecation warning: the launch commands
-    /// (`snouty launch`, `snouty debug`) take this path.
-    WarnDeprecated,
+/// Ambient credential resolution found a username and password, which snouty
+/// refuses.
+#[derive(Debug)]
+pub(crate) enum UnsupportedPassword {
+    /// From the environment. The fix names the selected profile, `profile`.
+    Environment { profile: Option<String> },
+    /// An older snouty stored it for `profile`.
+    Stored { profile: Option<String> },
 }
 
-/// The one step away from a username and password from `source`, for the
-/// selected `profile`. Doctor, the rejection and the warning all give it, so
-/// their advice cannot drift apart.
-pub(crate) fn basic_auth_next_step(source: &CredentialSource, profile: Option<&str>) -> String {
-    match source {
-        // `snouty login` alone cannot help: the environment hides what it
-        // stores.
-        CredentialSource::Environment { variables } => format!(
-            "run {} to store an API key, then `unset {}`",
-            login_command(profile),
-            variables.join(" ")
-        ),
-        // A named profile with no credential uses the default profile's, so
-        // the login goes to the selected profile.
-        CredentialSource::Stored(_) => format!(
-            "run {} to replace it with an API key",
-            login_command(profile)
-        ),
+impl UnsupportedPassword {
+    /// The error with its suggestion, as every command reports it.
+    pub(crate) fn into_report(self) -> Report {
+        let suggestion = self.suggestion();
+        Report::new(self)
+            .suppress_backtrace(true)
+            .suggestion(suggestion)
     }
-}
 
-fn deprecation_suggestion(source: &CredentialSource, profile: Option<&str>) -> String {
-    format!(
-        "username/password authentication is deprecated; {}",
-        basic_auth_next_step(source, profile)
-    )
-}
-
-/// Apply the caller's [`PasswordPolicy`] to a resolved credential. This is
-/// the only place that accepts or rejects username/password credentials, so
-/// the whole deprecation policy lives here. `profile` is the selected profile.
-pub(super) fn apply_password_policy(
-    authn_info: SourcedCredential,
-    policy: PasswordPolicy,
-    profile: Option<&str>,
-) -> Result<SourcedCredential> {
-    if !matches!(authn_info.value(), AuthenticationInfo::Password { .. }) {
-        return Ok(authn_info);
-    }
-    match policy {
-        PasswordPolicy::Reject => Err(user_error(
-            "This command does not accept username/password authentication, which is only supported when launching runs (`snouty launch`, `snouty debug`)",
-        )
-        .suggestion(deprecation_suggestion(authn_info.tag(), profile))),
-        PasswordPolicy::WarnDeprecated => {
-            // A bare eprintln, not log::warn!: the notice must reach stderr
-            // on every run, independent of RUST_LOG.
-            eprintln!(
-                "warning: {} (support will be removed in a future release)",
-                deprecation_suggestion(authn_info.tag(), profile)
-            );
-            Ok(authn_info)
+    pub(crate) fn suggestion(&self) -> String {
+        match self {
+            Self::Environment { profile } => format!(
+                "`unset {USERNAME_VAR_NAME} {PASSWORD_VAR_NAME}`, then run {} or set \
+                 ANTITHESIS_API_KEY",
+                login_command(profile.as_deref())
+            ),
+            Self::Stored { profile } => format!(
+                "create an API key, then run {} to replace the username and password",
+                login_command(profile.as_deref())
+            ),
         }
     }
 }
+
+impl std::fmt::Display for UnsupportedPassword {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Environment { .. } => write!(
+                f,
+                "snouty no longer accepts a username and password from \
+                 {USERNAME_VAR_NAME} and {PASSWORD_VAR_NAME}"
+            ),
+            Self::Stored { .. } => {
+                f.write_str("snouty no longer accepts the stored username and password")
+            }
+        }
+    }
+}
+
+impl std::error::Error for UnsupportedPassword {}

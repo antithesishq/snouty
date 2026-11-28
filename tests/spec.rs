@@ -526,8 +526,7 @@ fn cmd_mock_server(
     });
 
     env.set_env_var("ANTITHESIS_BASE_URL", &url);
-    env.set_env_var("ANTITHESIS_USERNAME", "testuser");
-    env.set_env_var("ANTITHESIS_PASSWORD", fake_secrets::FAKE_PASSWORD);
+    env.set_env_var("ANTITHESIS_API_KEY", fake_secrets::FAKE_API_KEY_A);
     env.set_env_var("ANTITHESIS_TENANT", "testtenant");
     Ok(())
 }
@@ -882,20 +881,14 @@ fn is_staging() -> bool {
 fn propagate_antithesis_env(env: &mut testscript_rs::TestEnvironment) -> testscript_rs::Result<()> {
     let tenant = std::env::var("ANTITHESIS_TENANT")
         .map_err(|_| err("SNOUTY_STAGING is set but ANTITHESIS_TENANT is not".to_string()))?;
-    let has_bearer = std::env::var("ANTITHESIS_API_KEY").is_ok();
-    let has_basic = std::env::var("ANTITHESIS_USERNAME").is_ok()
-        && std::env::var("ANTITHESIS_PASSWORD").is_ok();
-    if !has_bearer && !has_basic {
+    if std::env::var("ANTITHESIS_API_KEY").is_err() {
         return Err(err(
-            "SNOUTY_STAGING is set but no credentials found (set ANTITHESIS_API_KEY or ANTITHESIS_USERNAME+ANTITHESIS_PASSWORD)"
-                .to_string(),
+            "SNOUTY_STAGING is set but ANTITHESIS_API_KEY is not".to_string()
         ));
     }
     for var in [
         "ANTITHESIS_BASE_URL",
         "ANTITHESIS_API_KEY",
-        "ANTITHESIS_USERNAME",
-        "ANTITHESIS_PASSWORD",
         "ANTITHESIS_TENANT",
         "ANTITHESIS_EXTRA_HEADERS",
         "ANTITHESIS_HTTPS_PROXY",
@@ -906,8 +899,6 @@ fn propagate_antithesis_env(env: &mut testscript_rs::TestEnvironment) -> testscr
     for var in [
         "ANTITHESIS_BASE_URL",
         "ANTITHESIS_API_KEY",
-        "ANTITHESIS_USERNAME",
-        "ANTITHESIS_PASSWORD",
         "ANTITHESIS_EXTRA_HEADERS",
         "ANTITHESIS_HTTPS_PROXY",
     ] {

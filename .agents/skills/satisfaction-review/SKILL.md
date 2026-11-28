@@ -127,8 +127,8 @@ $ snouty login
 ```
 > What Antithesis tenant would you like to use? acme
 ? What kind of credentials would you like to use? (Hit Esc to skip)
-> API Key
-  Username & password (deprecated)
+> Single sign-on (OAuth)
+  API Key
 ```
 
 ### At `[after it exits]`           ← the closing screen

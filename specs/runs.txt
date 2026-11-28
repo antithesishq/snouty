@@ -45,10 +45,7 @@ stderr 'invalid property ID'
 ! snouty debug --run-id=.. --input-hash=-1 --vtime=1
 stderr "invalid value '..' for '--run-id <RUN_ID>': invalid run ID"
 
-# The command authenticates with the Antithesis API using
-#    ANTITHESIS_API_KEY and ANTITHESIS_TENANT env vars. Every endpoint other
-#    than launch requires an API key, so unlike the launch commands,
-#    username/password authentication is not supported.
+# Without a credential, the command fails.
 ! snouty runs
 stderr 'No Antithesis credentials found.*'
 stderr -literal 'Suggestion: run `snouty login` or set ANTITHESIS_API_KEY'
@@ -70,37 +67,27 @@ stderr '127\.0\.0\.1:1'
 env ACTIONS_ID_TOKEN_REQUEST_URL=
 env ACTIONS_ID_TOKEN_REQUEST_TOKEN=
 
-# With only username/password configured, the command fails fast with a clear
-# message instead of sending a request the API would reject with a 403.
+# snouty refuses a username and password, and sends no request.
 env ANTITHESIS_USERNAME=testuser
 set-env ANTITHESIS_PASSWORD ${FAKE_PASSWORD}
 env ANTITHESIS_TENANT=testtenant
 ! snouty runs
-stderr 'This command does not accept username/password authentication.*'
-# `snouty login` alone cannot fix it: the environment hides what login stores.
-stderr -literal 'run `snouty login` to store an API key, then `unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD`'
+stderr 'snouty no longer accepts a username and password'
+stderr -literal 'Suggestion: `unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD`, then run `snouty login` or set ANTITHESIS_API_KEY'
+! snouty --profile prod runs
+stderr -literal 'then run `snouty login --profile prod` or set ANTITHESIS_API_KEY'
+env ANTITHESIS_USERNAME=
+env ANTITHESIS_PASSWORD=
 
-# A username and password in the credentials file need only `snouty login`.
+# A stored username and password names the login that replaces it, for the
+# profile that holds it.
 isolate-home stored_password
 substitute ~/.config/snouty/credentials.toml
-env ANTITHESIS_USERNAME=
-env ANTITHESIS_PASSWORD=
 ! snouty runs
-stderr 'This command does not accept username/password authentication.*'
-stderr -literal 'run `snouty login` to replace it with an API key'
-! stderr 'unset'
-
-# The login for a password in a named profile names that profile.
+stderr 'snouty no longer accepts the stored username and password'
+stderr -literal 'Suggestion: create an API key, then run `snouty login` to replace the username and password'
 ! snouty --profile prod runs
-stderr -literal 'run `snouty login --profile prod` to replace it with an API key'
-
-# With a named profile, the login for an exported password names the profile.
-env ANTITHESIS_USERNAME=testuser
-set-env ANTITHESIS_PASSWORD ${FAKE_PASSWORD}
-! snouty --profile prod runs
-stderr -literal 'run `snouty login --profile prod` to store an API key, then `unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD`'
-env ANTITHESIS_USERNAME=
-env ANTITHESIS_PASSWORD=
+stderr -literal 'Suggestion: create an API key, then run `snouty login --profile prod` to replace the username and password'
 
 # On success, the command fetches all pages via next_cursor and prints a table
 # with relative timestamps and short status words.
@@ -676,12 +663,8 @@ stdout 'No runs found\.'
 
 # An API error opens with snouty's own text, with no status code, and the
 # server's text follows as a note. A 4xx is the user's to fix, so it prints as
-# a clean message with no backtrace/internal noise. The
-# generic mock-server directive only sets username/password, which `snouty
-# runs` rejects before making a request, so set an API key explicitly rather
-# than relying on one leaking from an earlier mock-runs-server block.
+# a clean message with no backtrace/internal noise.
 mock-server 400 '{"message":"limit must be 1..100"}'
-set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
 ! snouty runs
 stderr '^Error: the Antithesis API rejected the request$'
 stderr '^Note: limit must be 1\.\.100$'
@@ -699,7 +682,6 @@ stderr '^Note: limit must be 1\.\.100$'
 # error names the wait and the time that the Retry-After asks for, in RFC 3339
 # UTC, so that the user or a wrapping script can wait until then.
 [!staging] mock-server -header 'Retry-After: 3600' 429 ''
-[!staging] set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
 [!staging] ! snouty runs
 [!staging] stderr '^Error: you exceeded the Antithesis API rate limit$'
 [!staging] stderr '^Suggestion: retry after 3600s \(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\) to respect the server.s rate limit$'
@@ -707,7 +689,6 @@ stderr '^Note: limit must be 1\.\.100$'
 # A rejected API key from the environment names the variable to fix, because
 # a new `snouty login` does not replace it.
 mock-server 403 ''
-set-env ANTITHESIS_API_KEY ${FAKE_API_KEY_A}
 ! snouty runs
 stderr 'rejected the API key'
 stderr -literal 'Suggestion: set `ANTITHESIS_API_KEY` to a valid API key'
@@ -716,8 +697,6 @@ stderr -literal 'Suggestion: set `ANTITHESIS_API_KEY` to a valid API key'
 isolate-home rejected_stored
 substitute ~/.config/snouty/credentials.toml
 env ANTITHESIS_API_KEY=
-env ANTITHESIS_USERNAME=
-env ANTITHESIS_PASSWORD=
 ! snouty runs
 stderr 'rejected the API key'
 stderr -literal 'Suggestion: run `snouty login` to fix authentication'
@@ -728,8 +707,6 @@ stderr -literal 'Suggestion: run `snouty login` to fix authentication'
 [!staging] isolate-home expired_oauth
 [!staging] substitute ~/.config/snouty/credentials.toml
 [!staging] env ANTITHESIS_API_KEY=
-[!staging] env ANTITHESIS_USERNAME=
-[!staging] env ANTITHESIS_PASSWORD=
 [!staging] env RUST_BACKTRACE=1
 [!staging] ! snouty runs
 [!staging] stderr 'could not renew the sign-in; try again later'
@@ -737,8 +714,7 @@ stderr -literal 'Suggestion: run `snouty login` to fix authentication'
 [!staging] env RUST_BACKTRACE=
 # An expired sign-in that the tenant refuses to renew says to sign in again.
 [!staging] mock-server 401 ''
-[!staging] env ANTITHESIS_USERNAME=
-[!staging] env ANTITHESIS_PASSWORD=
+[!staging] env ANTITHESIS_API_KEY=
 [!staging] ! snouty runs
 [!staging] stderr 'sign-in expired.*; run `snouty login` to sign in again'
 
@@ -746,8 +722,6 @@ stderr -literal 'Suggestion: run `snouty login` to fix authentication'
 # login that follows a delete.
 isolate-home unparsable_stored
 env ANTITHESIS_API_KEY=
-env ANTITHESIS_USERNAME=
-env ANTITHESIS_PASSWORD=
 ! snouty runs
 stderr -literal 'Suggestion: fix ${WORK}/unparsable_stored/.config/snouty/credentials.toml, or delete it and run `snouty login`'
 

@@ -14,9 +14,7 @@
 # where the command fails. Only the credential-free check above the skip runs
 # in both modes.
 
-# The command authenticates with the Antithesis API using either
-#    ANTITHESIS_API_KEY and ANTITHESIS_TENANT, or
-#    ANTITHESIS_USERNAME, ANTITHESIS_PASSWORD, and ANTITHESIS_TENANT.
+# Without a credential, the command fails.
 ! snouty debug --input-hash abc --run-id run-123 --vtime 123
 stderr 'No Antithesis credentials found.*'
 
@@ -84,49 +82,46 @@ stderr -literal "the argument '--run-id <RUN_ID>' cannot be used with '--session
 #    --title sends antithesis.test_name, the session's title.
 #    The vtime is sent as its exact print: `1234567890` becomes
 #    `1234567890.0`.
-mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890 --title 'stalled leader election' --description 'debug this moment' --recipients team@example.com
-stderr '"antithesis.debugging.input_hash": "abc123"'
-stderr '"antithesis.debugging.run_id": "9043254f65c9c65d63fe043a0abfc7fc-53-1"'
+mock-runs-server
+snouty debug --input-hash 5181922178177328213 --run-id run-1 --vtime 1234567890 --title 'stalled leader election' --description 'debug this moment' --recipients team@example.com
+stderr '"antithesis.debugging.input_hash": "5181922178177328213"'
+stderr '"antithesis.debugging.run_id": "run-1"'
 stderr '"antithesis.debugging.vtime": "1234567890.0"'
 stderr '"antithesis.test_name": "stalled leader election"'
 stderr '"antithesis.event_description": "debug this moment"'
 stderr '"antithesis.report.recipients": "\[REDACTED\]"'
-# The mock-server directive configures username/password credentials, which are
-# deprecated — the launch warns and steers the user to `snouty login`.
-stderr 'warning: username/password authentication is deprecated'
 
 # --duration sends antithesis.debugging.duration, the number of minutes
 #    that the session stays available.
-mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890 --duration 90m
+mock-runs-server
+snouty debug --input-hash 5181922178177328213 --run-id run-1 --vtime 1234567890 --duration 90m
 stderr '"antithesis.debugging.duration": "90"'
 ! stderr 'is deprecated; write'
-mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890 --duration 6h
+mock-runs-server
+snouty debug --input-hash 5181922178177328213 --run-id run-1 --vtime 1234567890 --duration 6h
 stderr '"antithesis.debugging.duration": "360"'
 
 # A bare --duration still counts minutes, but is deprecated: a warning shows
 #    the value with a unit.
-mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890 --duration 30
+mock-runs-server
+snouty debug --input-hash 5181922178177328213 --run-id run-1 --vtime 1234567890 --duration 30
 stderr '^warning: a bare number for --duration is deprecated; write 30m$'
 stderr '"antithesis.debugging.duration": "30"'
 
 # Without --duration, snouty does not send antithesis.debugging.duration.
-mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
+mock-runs-server
+snouty debug --input-hash 5181922178177328213 --run-id run-1 --vtime 1234567890
 ! stderr 'antithesis.debugging.duration'
 
 # --param adds custom parameters to the session. Unknown keys, antithesis.*
 #    or user-defined, pass through. snouty redacts sensitive values in the
 #    printed parameters.
-mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890 --param attrs.team=payments --param antithesis.brand_new_param=on --param antithesis.integrations.github.token=${FAKE_GITHUB_TOKEN}
+mock-runs-server
+snouty debug --input-hash 5181922178177328213 --run-id run-1 --vtime 1234567890 --param attrs.team=payments --param antithesis.brand_new_param=on --param antithesis.integrations.github.token=${FAKE_GITHUB_TOKEN}
 stderr '"attrs.team": "payments"'
 stderr '"antithesis.brand_new_param": "on"'
 stderr '"antithesis.integrations.github.token": "\[REDACTED\]"'
-stdout 'Debugging session started: run_id run-123'
+stdout 'Debugging session started: run_id mock-run-id'
 
 # --param cannot override the value of a dedicated flag.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
@@ -148,7 +143,7 @@ stderr 'pass only one of antithesis.debugging.run_id and antithesis.debugging.se
 
 # snouty accepts the documented 202 as success.
 mock-server 202 '{"statusCode":202,"runId":"run-123"}'
-snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
+snouty debug --input-hash abc123 --session-id sess-1 --vtime 1234567890
 stdout 'Debugging session started: run_id run-123'
 
 # Before the launch, the run that --run-id names is looked up. The launch
@@ -229,17 +224,10 @@ mock-runs-server
 ! snouty --verbose debug --input-hash 5181922178177328214 --run-id run-2 --vtime 404
 stderr '^> POST .*/api/v0/runs/run-2/events/search/count$'
 ! stderr '^> POST .*/events/search$'
-env ANTITHESIS_API_KEY=
-
-# The runs endpoints refuse a username and password, so with them the run
-#    and the input hash are not looked up. The single-response mock answers
-#    every request with the launch response, which a run lookup cannot parse.
-mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty debug --input-hash abc123 --run-id no-such-run --vtime 1234567890
-stdout 'Debugging session started: run_id run-123'
 
 # --session-id remains supported for backwards compatibility. The input
-#    hash is not looked up for a session.
+#    hash is not looked up for a session. The cases below use it, because
+#    the single-response mock cannot answer a run lookup.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
 snouty debug --input-hash abc123 --session-id d5d1c9cf0e64b5dd69b00e97b07fe3f4-18-1 --vtime 1234567890
 stderr '"antithesis.debugging.session_id": "d5d1c9cf0e64b5dd69b00e97b07fe3f4-18-1"'
@@ -248,7 +236,7 @@ stderr '"antithesis.debugging.session_id": "d5d1c9cf0e64b5dd69b00e97b07fe3f4-18-
 #    session takes a few minutes to be ready, and `runs exec` waits for it,
 #    so the next step is the `runs exec` command at the debugged moment.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty debug --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --input-hash 6057726200491963783 --vtime 329.8037810830865
+snouty debug --session-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --input-hash 6057726200491963783 --vtime 329.8037810830865
 stdout 'Debugging session started: run_id run-123'
 stdout -literal 'The session takes a few minutes to be ready.'
 stdout -literal 'Run a script at this moment; `runs exec` waits until the session is ready:'
@@ -261,7 +249,7 @@ stdout -literal "  snouty runs exec run-123 6057726200491963783 329.803781083086
 # the response anyway (the mock answers HTTP 200 saying 202). Use --verbose to
 # see the response as it arrived.
 mock-server 200 '{"statusCode":202,"runId":"run-123"}'
-snouty --json debug --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --input-hash 6057726200491963783 --vtime 329.8037810830865
+snouty --json debug --session-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --input-hash 6057726200491963783 --vtime 329.8037810830865
 stdout '\s*"runId": "run-123".*'
 ! stdout '.*statusCode.*'
 ! stdout 'snouty runs'
@@ -270,16 +258,16 @@ stdout '\s*"runId": "run-123".*'
 # return an EMPTY body rather than the Launch_Error_Response envelope — verified
 # against the live API, which answers a bad token with 403 and no payload.
 mock-server 403 ''
-! snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
-stderr 'rejected the username and password'
-stderr -literal 'Suggestion: set `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD` to a valid username and password'
+! snouty debug --input-hash abc123 --session-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
+stderr 'rejected the API key'
+stderr -literal 'Suggestion: set `ANTITHESIS_API_KEY` to a valid API key'
 
 # A 429 is retried, a mutation such as a debugging launch too, and --verbose
 # logs each retry. With no Retry-After, the first wait is the 1-second backoff.
 # The spec runner shortens the retry waits. This case reads the real wait.
 env SNOUTY_TEST_SECOND_MS=
 mock-server -rate-limit 1 200 '{"message":"Success","runId":"run-123"}'
-snouty --verbose debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
+snouty --verbose debug --input-hash abc123 --session-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
 stderr -count=1 '^\* rate limited \(429\), retrying in 1\.[0-5]s$'
 stdout 'run-123'
 env SNOUTY_TEST_SECOND_MS=100
@@ -288,7 +276,7 @@ env SNOUTY_TEST_SECOND_MS=100
 # never masks the status either: snouty says what the status means, with the
 # body shown for debugging.
 mock-server 502 '<html><body>Bad Gateway</body></html>'
-! snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
+! snouty debug --input-hash abc123 --session-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
 stderr '^Error: the Antithesis API failed to complete the request$'
 stderr '.*<html><body>Bad Gateway</body></html>.*'
 
@@ -297,14 +285,14 @@ stderr '.*<html><body>Bad Gateway</body></html>.*'
 #    logged to stderr, so a configured extra header shows up on the wire.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
 set-env ANTITHESIS_EXTRA_HEADERS X-Snouty-Test: hello-world
-snouty --verbose debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
+snouty --verbose debug --input-hash abc123 --session-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
 stderr '> x-snouty-test: hello-world.*'
 
 # A malformed ANTITHESIS_EXTRA_HEADERS entry (missing the ':' separator) is
 #    rejected when the client is built, before any API call.
 mock-server 200 '{"message":"Success","runId":"run-123"}'
 set-env ANTITHESIS_EXTRA_HEADERS not-a-valid-header-line
-! snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
+! snouty debug --input-hash abc123 --session-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
 stderr 'ANTITHESIS_EXTRA_HEADERS entry missing \':\' separator: "not-a-valid-header-line".*'
 env ANTITHESIS_EXTRA_HEADERS=
 
@@ -314,7 +302,7 @@ env CLAUDECODE=1
 env AI_AGENT=claude-code_2-1-322_agent
 env CLAUDE_CODE_SESSION_ID=d83903be-202d-46c7-8831-50dfd8cdf5bc
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890 --param attrs.agent_version=other
+snouty debug --input-hash abc123 --session-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890 --param attrs.agent_version=other
 stderr '"attrs.agent": "claude-code"'
 stderr '"attrs.agent_version": "other"'
 stderr '"attrs.agent_session_id": "d83903be-202d-46c7-8831-50dfd8cdf5bc"'
@@ -332,13 +320,13 @@ cd checkout
 exec git -c user.name=snouty -c user.email=snouty@example.com commit -q --allow-empty -m init
 exec git remote add origin git@github.com:acme/widget.git
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
+snouty debug --input-hash abc123 --session-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
 stderr '"vcs.repo_owner": "acme"'
 stderr '"vcs.repo_branch": "feature/vcs"'
 stderr '"vcs.version_id": "[0-9a-f]{40}"'
 
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890 --no-vcs
+snouty debug --input-hash abc123 --session-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890 --no-vcs
 ! stderr 'vcs\.'
 stderr '"run.caller_type": "snouty"'
 
@@ -353,7 +341,7 @@ env GITHUB_ACTOR=octocat
 set-env ANTITHESIS_GITHUB_TOKEN ${FAKE_GITHUB_TOKEN}
 cd .
 mock-server 200 '{"message":"Success","runId":"run-123"}'
-snouty debug --input-hash abc123 --run-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
+snouty debug --input-hash abc123 --session-id 9043254f65c9c65d63fe043a0abfc7fc-53-1 --vtime 1234567890
 stderr '"run.creator_name": "octocat"'
 ! stderr 'antithesis.integrations'
 ! stderr 'run.cron_schedule'

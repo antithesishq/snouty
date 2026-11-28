@@ -2823,15 +2823,16 @@ def help_story_check(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
 # the value, so an inherited secret is never printed and a placeholder is purely
 # a stand-in.
 def _doctor_env(
-    *, api_key: bool, username: bool, password: bool, tenant: bool, registry: bool
+    *, api_key: bool, tenant: bool, registry: bool
 ) -> dict[str, str | None]:
     def want(name: str, set_it: bool, placeholder: str) -> str | None:
         return (os.environ.get(name) or placeholder) if set_it else None
 
     return {
         "ANTITHESIS_API_KEY": want("ANTITHESIS_API_KEY", api_key, _FAKE_API_KEY_A),
-        "ANTITHESIS_USERNAME": want("ANTITHESIS_USERNAME", username, "demo-user"),
-        "ANTITHESIS_PASSWORD": want("ANTITHESIS_PASSWORD", password, _FAKE_PASSWORD),
+        # snouty refuses these, so an operator's leftover values must not leak in.
+        "ANTITHESIS_USERNAME": None,
+        "ANTITHESIS_PASSWORD": None,
         "ANTITHESIS_TENANT": want("ANTITHESIS_TENANT", tenant, "demo-tenant"),
         "ANTITHESIS_REGISTRY": want(
             "ANTITHESIS_REGISTRY", registry, "registry.example.com/acme/demo"
@@ -2845,7 +2846,7 @@ def _doctor_env(
 # synthesized creds — a placeholder tenant resolves to an unreachable host. They
 # run against the operator's real credentials instead (gen-gallery already
 # requires them; discovery hits the same API), dropping only any ambient legacy
-# username/password so the API key is reported on its own.
+# username and password, which snouty refuses.
 def _reachable_doctor_env() -> dict[str, str | None]:
     return {"ANTITHESIS_USERNAME": None, "ANTITHESIS_PASSWORD": None}
 
@@ -3562,13 +3563,10 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "doctor-api-key",
             "Confirm my environment is ready with an API key",
             "I've configured snouty with an API key and want doctor to confirm I'm set up.",
-            "doctor reports the API key as set without mentioning username/password, and also "
-            "contacts the API to confirm it's reachable and report the API and tenant versions.",
+            "doctor reports the API key as set, and also contacts the API to confirm it's "
+            "reachable and report the API and tenant versions.",
             ["doctor"],
-            doctor_check(
-                contains=("API key provided", "Antithesis API reachable"),
-                absent=("ANTITHESIS_USERNAME", "ANTITHESIS_PASSWORD"),
-            ),
+            doctor_check(contains=("API key provided", "Antithesis API reachable")),
             json_capable=False,
             env=_reachable_doctor_env(),
         ),
@@ -3585,9 +3583,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
                 absent=("Antithesis API",),
             ),
             json_capable=False,
-            env=_doctor_env(
-                api_key=True, username=False, password=False, tenant=True, registry=True
-            ),
+            env=_doctor_env(api_key=True, tenant=True, registry=True),
         ),
         Story(
             "doctor-api-unreachable",
@@ -3605,8 +3601,6 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             env={
                 **_doctor_env(
                     api_key=True,
-                    username=False,
-                    password=False,
                     tenant=True,
                     registry=True,
                 ),
@@ -3640,17 +3634,17 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
                 absent=("ANTITHESIS_USERNAME", "ANTITHESIS_PASSWORD"),
             ),
             json_capable=False,
-            env=_doctor_env(
-                api_key=True, username=True, password=True, tenant=True, registry=True
-            ),
+            env={
+                **_doctor_env(api_key=True, tenant=True, registry=True),
+                **_LEGACY_PASSWORD_ENV,
+            },
         ),
         Story(
             "doctor-no-auth",
             "Fresh install — doctor tells me what to configure",
             "I just installed snouty and haven't set any credentials; I want doctor to tell me what I need.",
             "doctor identifies the missing credentials and offers `snouty login` or "
-            "ANTITHESIS_API_KEY. It must not recommend legacy username/password "
-            "authentication (issue #145).",
+            "ANTITHESIS_API_KEY.",
             ["doctor"],
             doctor_check(
                 contains=(
@@ -3658,14 +3652,11 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
                     "snouty login",
                     "ANTITHESIS_API_KEY",
                 ),
-                absent=("ANTITHESIS_USERNAME", "ANTITHESIS_PASSWORD"),
                 ok=False,
             ),
             json_capable=False,
             env=_doctor_env(
                 api_key=False,
-                username=False,
-                password=False,
                 tenant=False,
                 registry=False,
             ),
@@ -3674,65 +3665,25 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
         Story(
             "doctor-legacy-auth",
             "I only have a legacy username and password",
-            "I authenticate with a username/password and no API key; I want doctor to tell me whether that's enough.",
-            "doctor reports one warning: username/password works only for `snouty launch` and "
-            "`snouty debug`, is deprecated, and `snouty runs` refuses it. It names where the "
-            "credentials come from and gives one next step: run `snouty login` to store an API "
-            "key, then a copyable unset command. It suggests `snouty login` only once.",
+            "I authenticate with a username/password and no API key; I want doctor to tell me "
+            "whether that's enough.",
+            "doctor fails the credentials check: snouty no longer accepts a username and "
+            "password. It gives one next step: a copyable unset command, then `snouty login` "
+            "or ANTITHESIS_API_KEY.",
             ["doctor"],
             doctor_check(
                 contains=(
-                    "username/password for user [",
-                    "only works for `snouty launch` and `snouty debug`",
-                    "WARNING: username/password is deprecated, and `snouty runs` and other API "
-                    "commands refuse it",
-                    "NOTE: read from the `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD` "
-                    "environment variables",
-                    "NOTE: run `snouty login` to store an API key, then "
-                    "`unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD`",
+                    "snouty no longer accepts a username and password",
                     OneLine("`unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD`"),
+                    "snouty login",
                 ),
-                absent=(
-                    "No credentials the API commands accept",
-                    "Using password credentials",
-                    "run `snouty login` or set ANTITHESIS_API_KEY",
-                ),
+                ok=False,
             ),
             json_capable=False,
-            env=_doctor_env(
-                api_key=False, username=True, password=True, tenant=True, registry=True
-            ),
-        ),
-        Story(
-            "doctor-shadowed-credentials",
-            "I ran `snouty login` but doctor still reports my old credentials",
-            "I stored an API key with `snouty login`, but a username and password are still "
-            "exported in my shell; I want to know why doctor keeps reporting the old ones.",
-            "doctor reports one warning: the username and password are hiding the API key. It "
-            "names where they come from and why `snouty runs` refuses them, and gives one next "
-            "step, a copyable unset command, naming the API key's file. It doesn't tell me to run "
-            "`snouty login` again.",
-            ["doctor"],
-            doctor_check(
-                contains=(
-                    "the username and password are hiding your API key",
-                    "WARNING: snouty uses the username and password from the `ANTITHESIS_USERNAME`",
-                    "which `snouty runs` refuses",
-                    "NOTE: `unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD` to use the API key in "
-                    "the credentials file",
-                ),
-                absent=(
-                    "run `snouty login` or set ANTITHESIS_API_KEY",
-                    "hides a stored credential",
-                    "Using password credentials",
-                ),
-            ),
-            json_capable=False,
-            env=_doctor_env(
-                api_key=False, username=True, password=True, tenant=True, registry=True
-            ),
-            isolate_config=True,
-            seed_files={_CREDS: _SEED_CREDS_TOML},
+            env={
+                **_doctor_env(api_key=False, tenant=True, registry=True),
+                **_LEGACY_PASSWORD_ENV,
+            },
         ),
         # -- config ---------------------------------------------------------
         Story(
@@ -3783,8 +3734,6 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             expect_ok=False,
             env=_doctor_env(
                 api_key=False,
-                username=False,
-                password=False,
                 tenant=False,
                 registry=False,
             ),
@@ -3802,9 +3751,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             ["doctor", "--json", "--offline"],
             doctor_json_check,
             json_capable=False,
-            env=_doctor_env(
-                api_key=True, username=False, password=False, tenant=True, registry=True
-            ),
+            env=_doctor_env(api_key=True, tenant=True, registry=True),
             isolate_config=True,
         ),
     ]
@@ -4524,7 +4471,7 @@ def build_help_stories(d: Discovery) -> list[Story]:
             "Understand how to launch a run",
             "I run `snouty launch --help` to learn how to start a test run. The environment "
             "variable list should describe each setting without implying that its variable "
-            "is required or preferred. Username/password should remain marked deprecated. "
+            "is required or preferred. "
             "The help should explain that credentials come from `snouty login` and describe "
             "the launch follow-ups: open the run with `snouty runs show --web <run_id>`, "
             "watch live properties with "
@@ -4974,15 +4921,13 @@ _CREDS = ".config/snouty/credentials.toml"
 _TENANT_REGISTRY = f"registry.{_TENANT}.antithesis.com"
 _SEED_SETTINGS_TOML = f'tenant = "{_TENANT}"\nregistry = "{_REGISTRY}"\n'
 # A `credentials.toml` exactly as `snouty login` writes it.
-_SEED_CREDS_TOML = f'[default]\ntype = "ApiKey"\napi_key = "{_FAKE_API_KEY_A}"\n'
 _SEED_CREDS_B_TOML = f'[default]\ntype = "ApiKey"\napi_key = "{_FAKE_API_KEY_B}"\n'
 
 _ASK_TENANT = "What Antithesis tenant"
 _ASK_CREDENTIALS = "What kind of credentials"
 _ASK_KEY = "Please enter your API Key"
 _EMPTY_KEY_REFUSED = "An empty value is not valid."
-_ASK_REPLACE_PASSWORD = "Replace your stored username and password?"
-_PASSWORD_REFUSED = "login needs an API key or a single sign-on"
+_PASSWORD_REFUSED = "snouty no longer accepts the stored username and password"
 # The terminal wraps the question to replace the seeded `_REGISTRY`, so a
 # check matches only its start.
 _ASK_REPLACE_REGISTRY = f"Replace registry `{_REGISTRY}`"
@@ -4991,6 +4936,11 @@ _KEPT_REGISTRY = f"Saved tenant `{_TENANT}` and registry `{_REGISTRY}`."
 _SEED_PASSWORD_CREDS_TOML = (
     f'[default]\ntype = "Password"\nusername = "puser"\npassword = "{_FAKE_PASSWORD}"\n'
 )
+# A username and password exported as an older snouty read them.
+_LEGACY_PASSWORD_ENV = {
+    "ANTITHESIS_USERNAME": "demo-user",
+    "ANTITHESIS_PASSWORD": _FAKE_PASSWORD,
+}
 
 # Shared satisfaction rubric for the TTY stories: judge the conversation AND the
 # persisted result, not just the exit code.
@@ -5098,7 +5048,7 @@ def build_tty_stories() -> list[Story]:
             "login-replaces-stored-password",
             "Move from a stored username/password to an API key",
             "An older snouty stored my username and password. Re-running login should switch me to "
-            "an API key, without offering username/password again.",
+            "an API key, without a question about the username and password.",
             ["login"],
             (
                 (_ASK_TENANT, ENTER),
@@ -5108,10 +5058,10 @@ def build_tty_stories() -> list[Story]:
             tty_persisted(
                 prompts=(
                     _ASK_KEY,
-                    ", replacing your stored username and password.",
+                    "Stored your API key",
                     _KEPT_REGISTRY,
                 ),
-                absent_prompts=(_ASK_CREDENTIALS, _ASK_REPLACE_PASSWORD),
+                absent_prompts=(_ASK_CREDENTIALS, "Replace your stored"),
                 files=(
                     (_CREDS, ('type = "ApiKey"', f'api_key = "{_FAKE_API_KEY_B}"')),
                     (_SETTINGS, (f'registry = "{_REGISTRY}"',)),
@@ -5128,7 +5078,7 @@ def build_tty_stories() -> list[Story]:
             "Hit Enter through login with a stored username/password",
             "An older snouty stored my username and password. I re-ran login to check my settings "
             "and hit Enter at every prompt. My stored credentials must not be lost, and I want "
-            "to know that login could not sign in with them.",
+            "to know that snouty no longer accepts them.",
             ["login"],
             (
                 (_ASK_TENANT, ENTER),

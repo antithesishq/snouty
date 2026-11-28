@@ -9,9 +9,9 @@ use crate::api::{
     normalize_base_url,
 };
 use crate::auth::{
-    AuthenticationInfo, CredentialSource, CredentialStore, OidcFetchError, RenewalError,
-    SourcedCredential, basic_auth_next_step, keychain_entry_name, login_command, refuses_renewal,
-    rejected_credential_next_step,
+    AuthenticationInfo, CredentialSource, CredentialStore, OidcFetchError, PASSWORD_VAR_NAME,
+    RenewalError, SourcedCredential, USERNAME_VAR_NAME, UnsupportedPassword, keychain_entry_name,
+    login_command, refuses_renewal, rejected_credential_next_step,
 };
 use crate::compose;
 use crate::container;
@@ -114,7 +114,6 @@ enum CredentialKind {
     ApiKey,
     Oauth,
     GithubActionsOidc,
-    Password,
 }
 
 impl From<&AuthenticationInfo> for CredentialKind {
@@ -123,7 +122,6 @@ impl From<&AuthenticationInfo> for CredentialKind {
             AuthenticationInfo::ApiKey { .. } => Self::ApiKey,
             AuthenticationInfo::OAuth(_) => Self::Oauth,
             AuthenticationInfo::GithubActionsOidc(_) => Self::GithubActionsOidc,
-            AuthenticationInfo::Password { .. } => Self::Password,
         }
     }
 }
@@ -390,22 +388,6 @@ fn authn_checks(
         AuthenticationInfo::ApiKey { .. } => {
             enrich_with_source(Check::ok(id, "API key provided"), credentials, selected)
         }
-        // A username and password that hide a credential the API accepts:
-        // the one thing to do is free that credential (issue #292).
-        AuthenticationInfo::Password { .. }
-            if let Some(hidden) = hidden
-                && !matches!(hidden.value(), AuthenticationInfo::Password { .. }) =>
-        {
-            return vec![hidden_credential_check(
-                credentials,
-                variables,
-                hidden,
-                selected,
-            )];
-        }
-        AuthenticationInfo::Password { username, .. } => {
-            return vec![password_only_check(credentials, username, selected)];
-        }
     };
 
     let mut checks = vec![check];
@@ -429,9 +411,8 @@ fn authn_checks(
     checks
 }
 
-/// The check for a credential shortfall. Every credential kind except
-/// username and password is accepted, so the notes name the ways to get one
-/// rather than naming an API key alone.
+/// The check for a credential shortfall. Its notes name every way to get a
+/// credential.
 fn missing_credentials_check(message: impl Into<String>, github_actions: bool) -> Check {
     Check::fail(CheckId::Credentials { kind: None }, message)
         .note(
@@ -442,58 +423,6 @@ fn missing_credentials_check(message: impl Into<String>, github_actions: bool) -
             Level::Note,
             crate::auth::no_credentials_suggestion(github_actions),
         )
-}
-
-/// The single check for a username and password that hide a credential the
-/// API accepts. It replaces the shortfall, password, and conflict checks,
-/// which together repeated the problem three ways and led with `snouty
-/// login`, a step the user has already taken.
-fn hidden_credential_check(
-    in_use: &SourcedCredential,
-    variables: &[&str],
-    hidden: &SourcedCredential,
-    selected: Option<&str>,
-) -> Check {
-    Check::warn(
-        CheckId::credentials(in_use),
-        format!(
-            "the username and password are hiding your {}",
-            hidden.value()
-        ),
-    )
-    .note(
-        Level::Warning,
-        format!(
-            "snouty uses the username and password from {}, which `snouty runs` refuses",
-            describe_source(in_use.tag(), selected)
-        ),
-    )
-    .note(Level::Note, unset_to_use(variables, hidden, selected))
-}
-
-/// The single check for a username and password with no credential the API
-/// accepts behind them. It replaces the shortfall and password checks, which
-/// together suggested `snouty login` twice.
-fn password_only_check(
-    in_use: &SourcedCredential,
-    username: &str,
-    selected: Option<&str>,
-) -> Check {
-    enrich_with_source(
-        Check::warn(
-            CheckId::credentials(in_use),
-            format!(
-                "username/password for user [{username}] only works for `snouty launch` and `snouty debug`"
-            ),
-        )
-        .note(
-            Level::Warning,
-            "username/password is deprecated, and `snouty runs` and other API commands refuse it",
-        ),
-        in_use,
-        selected,
-    )
-    .note(Level::Note, basic_auth_next_step(in_use.tag(), selected))
 }
 
 /// The one step that frees `hidden`, a stored credential that the
@@ -622,6 +551,26 @@ fn collect_checks(settings: &Settings) -> (Vec<Check>, Option<SourcedCredential>
                     err.to_string(),
                 )
                 .note(Level::Note, crate::auth::BlankApiKey::SUGGESTION),
+            );
+            None
+        }
+        Err(ref err) if let Some(password) = err.downcast_ref::<UnsupportedPassword>() => {
+            // Variables that hide a stored credential need only an unset: the
+            // user already ran `snouty login` (issue #292).
+            let hidden = matches!(password, UnsupportedPassword::Environment { .. })
+                .then(|| AuthenticationInfo::stored_behind_environment(settings.profile()))
+                .flatten();
+            let next_step = match hidden {
+                Some(hidden) => unset_to_use(
+                    &[USERNAME_VAR_NAME, PASSWORD_VAR_NAME],
+                    &hidden,
+                    settings.profile(),
+                ),
+                None => password.suggestion(),
+            };
+            checks.push(
+                Check::fail(CheckId::Credentials { kind: None }, err.to_string())
+                    .note(Level::Note, next_step),
             );
             None
         }
@@ -790,11 +739,8 @@ pub async fn cmd_doctor(
 
     if !offline {
         // Connectivity + version check (network). Skipped with --offline. Only
-        // runs when the resolved credentials work against the full API:
-        // /api/version, like every endpoint but launch, rejects username/password
-        // auth, so probing it with those credentials would only yield a misleading
-        // 403 — and the auth checks above already tell deprecated-credential and
-        // unauthenticated users to set a key. The client is built from the
+        // runs when there is a credential to probe with: the auth checks above
+        // already tell the user how to get one. The client is built from the
         // resolved settings (base url / tenant), and `verbose` logs the
         // request/response.
         let mut api_failed = false;
@@ -998,12 +944,10 @@ pub async fn cmd_doctor(
 
 #[cfg(test)]
 mod tests {
-    use crate::auth::{
-        API_KEY_VAR_NAME, GithubActionsOidcToken, PASSWORD_VAR_NAME, USERNAME_VAR_NAME,
-    };
+    use crate::auth::{API_KEY_VAR_NAME, GithubActionsOidcToken};
     use crate::testutils::auth::oauth_credential_in;
     use crate::testutils::fake_secrets::{
-        FAKE_ACCESS_TOKEN_A, FAKE_API_KEY_A, FAKE_API_KEY_B, FAKE_OIDC_REQUEST_TOKEN, FAKE_PASSWORD,
+        FAKE_ACCESS_TOKEN_A, FAKE_API_KEY_A, FAKE_API_KEY_B, FAKE_OIDC_REQUEST_TOKEN,
     };
 
     use super::*;
@@ -1069,102 +1013,8 @@ mod tests {
         );
     }
 
-    /// Only a username and password: one warning, whose next step depends on
-    /// where they came from.
     #[test]
-    fn a_password_alone_is_one_check_with_one_next_step() {
-        let notes = |source: SourcedCredential, selected: Option<&str>| {
-            let checks = authn_checks(&[source], selected, false);
-            assert_eq!(
-                checks.len(),
-                1,
-                "got: {:?}",
-                checks.iter().map(|c| c.id).collect::<Vec<_>>()
-            );
-            let check = &checks[0];
-            assert_eq!(
-                check.id,
-                CheckId::Credentials {
-                    kind: Some(CredentialKind::Password)
-                }
-            );
-            assert_eq!(check.status, Status::Warn);
-            assert_eq!(
-                check.message,
-                "username/password for user [user] only works for `snouty launch` and `snouty debug`"
-            );
-            check
-                .notes
-                .iter()
-                .map(|n| (n.level, n.text.clone()))
-                .collect::<Vec<_>>()
-        };
-        let deprecated = (
-            Level::Warning,
-            "username/password is deprecated, and `snouty runs` and other API commands refuse it"
-                .to_owned(),
-        );
-        assert_eq!(
-            notes(env_password_source(), None),
-            [
-                deprecated.clone(),
-                (
-                    Level::Note,
-                    "read from the `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD` \
-                    environment variables"
-                        .to_owned()
-                ),
-                (
-                    Level::Note,
-                    "run `snouty login` to store an API key, then \
-                    `unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD`"
-                        .to_owned()
-                ),
-            ]
-        );
-        assert_eq!(
-            notes(
-                from_file(
-                    AuthenticationInfo::Password {
-                        username: "user".to_owned(),
-                        password: FAKE_PASSWORD.to_owned(),
-                    },
-                    None
-                ),
-                None
-            ),
-            [
-                deprecated,
-                (Level::Note, "read from the credentials file".to_owned()),
-                (
-                    Level::Note,
-                    "run `snouty login` to replace it with an API key".to_owned()
-                ),
-            ]
-        );
-        // A bare `snouty login` writes the default profile, so the next step
-        // names the selected profile.
-        let keychain = notes(
-            from_keychain(
-                AuthenticationInfo::Password {
-                    username: "user".to_owned(),
-                    password: FAKE_PASSWORD.to_owned(),
-                },
-                Some("prod"),
-            ),
-            Some("prod"),
-        );
-        assert_eq!(
-            keychain.last().unwrap(),
-            &(
-                Level::Note,
-                "run `snouty login --profile prod` to replace it with an API key".to_owned()
-            )
-        );
-    }
-
-    #[test]
-    fn auth_nothing_set_errors_and_only_mentions_api_key() {
+    fn auth_nothing_set_errors_and_names_login() {
         let checks = [missing_credentials_check("PANIC PANIC PANIC", false)];
         assert_eq!(checks.len(), 1);
         assert_eq!(checks[0].status, Status::Error);
@@ -1177,18 +1027,6 @@ mod tests {
                 .any(|n| n.text.contains("snouty login")),
             "an unconfigured machine must be told the command that configures it"
         );
-        let all = format!(
-            "{} {}",
-            checks[0].message,
-            checks[0]
-                .notes
-                .iter()
-                .map(|n| n.text.as_str())
-                .collect::<Vec<_>>()
-                .join(" ")
-        );
-        assert!(!all.contains("USERNAME"));
-        assert!(!all.contains("PASSWORD"));
     }
 
     /// A user who meets both messages reads one wording, not two.
@@ -1237,16 +1075,6 @@ mod tests {
         }))
     }
 
-    fn env_password_source() -> SourcedCredential {
-        from_env(
-            AuthenticationInfo::Password {
-                username: "user".to_owned(),
-                password: FAKE_PASSWORD.to_owned(),
-            },
-            vec![USERNAME_VAR_NAME, PASSWORD_VAR_NAME],
-        )
-    }
-
     fn file_api_key_source() -> SourcedCredential {
         from_file(
             AuthenticationInfo::ApiKey {
@@ -1260,52 +1088,6 @@ mod tests {
     fn one_credential_source_reports_no_conflict() {
         let checks = authn_checks(&[file_api_key_source()], None, false);
         assert!(!checks.iter().any(|c| c.id == CheckId::CredentialSources));
-    }
-
-    /// The case issue #292 reported: `snouty login` stored an API key while a
-    /// legacy username/password was still exported. One check names the
-    /// problem and the one step that fixes it.
-    #[test]
-    fn a_password_hiding_an_api_key_is_one_check_with_one_next_step() {
-        let checks = authn_checks(&[env_password_source(), file_api_key_source()], None, false);
-        assert_eq!(
-            checks.len(),
-            1,
-            "got: {:?}",
-            checks.iter().map(|c| c.id).collect::<Vec<_>>()
-        );
-        let check = &checks[0];
-        assert_eq!(
-            check.id,
-            CheckId::Credentials {
-                kind: Some(CredentialKind::Password)
-            }
-        );
-        assert_eq!(check.status, Status::Warn);
-        assert_eq!(
-            check.message,
-            "the username and password are hiding your API key"
-        );
-        assert_eq!(
-            check
-                .notes
-                .iter()
-                .map(|n| (n.level, n.text.as_str()))
-                .collect::<Vec<_>>(),
-            [
-                (
-                    Level::Warning,
-                    "snouty uses the username and password from the \
-                    `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD` environment variables, \
-                    which `snouty runs` refuses"
-                ),
-                (
-                    Level::Note,
-                    "`unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD` to use the API key in \
-                    the credentials file"
-                ),
-            ]
-        );
     }
 
     fn api_key(api_key: &str) -> AuthenticationInfo {
@@ -1375,26 +1157,20 @@ mod tests {
     /// for its profile, also when the default profile holds a working one.
     #[test]
     fn a_stored_credential_that_cannot_work_is_replaced_by_login() {
-        let password = AuthenticationInfo::Password {
-            username: "user".to_owned(),
-            password: FAKE_PASSWORD.to_owned(),
-        };
-        for (in_use, status) in [(password, Status::Warn), (api_key(""), Status::Error)] {
-            let checks = authn_checks(
-                &[
-                    from_file(in_use, Some("prod")),
-                    from_file(api_key(FAKE_API_KEY_A), None),
-                ],
-                Some("prod"),
-                false,
-            );
-            assert_eq!(checks.len(), 1);
-            assert_eq!(checks[0].status, status);
-            assert_eq!(
-                checks[0].notes.last().unwrap().text,
-                "run `snouty login --profile prod` to replace it with an API key"
-            );
-        }
+        let checks = authn_checks(
+            &[
+                from_file(api_key(""), Some("prod")),
+                from_file(api_key(FAKE_API_KEY_A), None),
+            ],
+            Some("prod"),
+            false,
+        );
+        assert_eq!(checks.len(), 1);
+        assert_eq!(checks[0].status, Status::Error);
+        assert_eq!(
+            checks[0].notes.last().unwrap().text,
+            "run `snouty login --profile prod` to replace it with an API key"
+        );
     }
 
     // ---- required-settings checks --------------------------------------
@@ -1771,16 +1547,6 @@ mod tests {
                 ))],
                 Status::Ok,
                 Some(CredentialKind::GithubActionsOidc),
-            ),
-            (
-                vec![env_password_source()],
-                Status::Warn,
-                Some(CredentialKind::Password),
-            ),
-            (
-                vec![env_password_source(), file_api_key_source()],
-                Status::Warn,
-                Some(CredentialKind::Password),
             ),
         ];
         for (sources, status, kind) in cases {

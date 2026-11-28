@@ -356,34 +356,23 @@ run `snouty login` or set ANTITHESIS_API_KEY
             with self.subTest(action=action):
                 passed, _ = self.check("doctor-no-auth", output.replace(action, ""), 1)
                 self.assertFalse(passed)
-        for variable in ("ANTITHESIS_USERNAME", "ANTITHESIS_PASSWORD"):
-            with self.subTest(variable=variable):
-                passed, _ = self.check("doctor-no-auth", output + variable, 1)
-                self.assertFalse(
-                    passed, "fresh setup must not recommend legacy credentials"
-                )
         passed, _ = self.check("doctor-no-auth", output, 0)
         self.assertFalse(passed)
 
-    def test_legacy_auth_requires_restrictions_and_migration_actions(self):
-        output = """  ⚠ username/password for user [alice] only works for `snouty launch` and `snouty debug`
-      WARNING: username/password is deprecated, and `snouty runs` and other API commands refuse it
-      NOTE: read from the `ANTITHESIS_USERNAME` and `ANTITHESIS_PASSWORD` environment variables
-      NOTE: run `snouty login` to store an API key, then `unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD`
+    def test_legacy_auth_requires_the_error_and_the_fix(self):
+        output = """  ✗ snouty no longer accepts a username and password from ANTITHESIS_USERNAME and ANTITHESIS_PASSWORD
+      NOTE: `unset ANTITHESIS_USERNAME ANTITHESIS_PASSWORD`, then run `snouty login` or set ANTITHESIS_API_KEY
 """
-        passed, detail = self.check("doctor-legacy-auth", output, 0)
+        passed, detail = self.check("doctor-legacy-auth", output, 1)
         self.assertTrue(passed, detail)
         for action in (
-            "refuse it",
-            "deprecated",
-            "snouty launch",
-            "snouty debug",
-            "snouty login",
+            "no longer accepts",
             "unset ANTITHESIS_USERNAME",
+            "snouty login",
         ):
             with self.subTest(action=action):
                 passed, _ = self.check(
-                    "doctor-legacy-auth", output.replace(action, ""), 0
+                    "doctor-legacy-auth", output.replace(action, ""), 1
                 )
                 self.assertFalse(passed)
 

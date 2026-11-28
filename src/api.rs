@@ -14,7 +14,7 @@ use reqwest::{Client, Proxy};
 use serde::de::DeserializeOwned;
 
 use crate::api_cache::{self, ApiCache, CachePolicy};
-use crate::auth::{AuthenticationInfo, PasswordPolicy, rejected_credential_next_step};
+use crate::auth::{AuthenticationInfo, rejected_credential_next_step};
 use crate::env;
 use crate::error::{ApiError, user_error};
 use crate::params::{
@@ -830,26 +830,10 @@ fn cap_stream(stream: JsonStream, limit: Option<NonZeroU64>) -> JsonStream {
 }
 
 impl AntithesisApi {
-    /// Rejects username/password credentials with a friendly error
-    /// ([`PasswordPolicy::Reject`]); the launch commands use
-    /// [`AntithesisApi::new_for_launch`].
-    pub fn new(settings: &Settings, verbose: bool) -> Result<Self> {
-        Self::ambient(settings, verbose, PasswordPolicy::Reject)
-    }
-
-    /// Like [`AntithesisApi::new`], but accepts the deprecated
-    /// username/password credentials and warns on use
-    /// ([`PasswordPolicy::WarnDeprecated`]) — the launch endpoints are the
-    /// only endpoints that still accept them. TODO: drop this constructor once
-    /// the launch endpoints reject username/password too.
-    pub fn new_for_launch(settings: &Settings, verbose: bool) -> Result<Self> {
-        Self::ambient(settings, verbose, PasswordPolicy::WarnDeprecated)
-    }
-
     /// The client for the credential that every command finds. A rejection
     /// of it names the step that fixes it at its source.
-    fn ambient(settings: &Settings, verbose: bool, policy: PasswordPolicy) -> Result<Self> {
-        let credential = AuthenticationInfo::for_ambient_configuration(settings.profile(), policy)?;
+    pub fn new(settings: &Settings, verbose: bool) -> Result<Self> {
+        let credential = AuthenticationInfo::for_ambient_configuration(settings.profile())?;
         let next_step = rejected_credential_next_step(&credential, settings.profile());
         Ok(Self {
             rejected_next_step: Some(next_step),
@@ -925,15 +909,6 @@ impl AntithesisApi {
             .ok()
             .and_then(|url| url.host_str().map(str::to_string))
             .unwrap_or_else(|| self.base_url.clone())
-    }
-
-    /// Whether the client authenticates with the deprecated username and
-    /// password, which only the launch endpoints accept.
-    pub fn uses_password(&self) -> bool {
-        matches!(
-            self.client.inner().authn_info,
-            AuthenticationInfo::Password { .. }
-        )
     }
 
     /// The credential that the client authenticates with.
@@ -2395,8 +2370,8 @@ mod tests {
     use crate::testutils::auth::{jwt_expiring_in, oauth_credential_in, paseto_expiring_in};
     use crate::testutils::fake_secrets::{
         FAKE_ACCESS_TOKEN_A, FAKE_ACCESS_TOKEN_B, FAKE_API_KEY_A, FAKE_BASIC_AUTHORIZATION,
-        FAKE_GITHUB_TOKEN, FAKE_OAUTH_FLOW_TOKEN, FAKE_OIDC_REQUEST_TOKEN, FAKE_PASSWORD,
-        FAKE_REFRESH_TOKEN_A, FAKE_REFRESH_TOKEN_B, FAKE_SESSION_COOKIE, FAKE_USERNAME, MARKER,
+        FAKE_GITHUB_TOKEN, FAKE_OAUTH_FLOW_TOKEN, FAKE_OIDC_REQUEST_TOKEN, FAKE_REFRESH_TOKEN_A,
+        FAKE_REFRESH_TOKEN_B, FAKE_SESSION_COOKIE, MARKER,
     };
     use hegel::{Generator, generators};
     use std::sync::Arc;
@@ -2473,9 +2448,8 @@ mod tests {
     fn test_api_with_settings(settings: &Settings, cache_dir: Option<&TempDir>) -> AntithesisApi {
         AntithesisApi::build(
             settings,
-            AuthenticationInfo::Password {
-                username: FAKE_USERNAME.to_owned(),
-                password: FAKE_PASSWORD.to_owned(),
+            AuthenticationInfo::ApiKey {
+                api_key: FAKE_API_KEY_A.to_owned(),
             },
             false,
             cache_dir.map_or(ResponseCache::Disabled, |d| {
@@ -2952,9 +2926,8 @@ mod tests {
     fn with_base_url_trims_trailing_slash() {
         let api = AntithesisApi::build(
             &Settings::for_test_base_url("http://example.com/"),
-            AuthenticationInfo::Password {
-                username: FAKE_USERNAME.to_owned(),
-                password: FAKE_PASSWORD.to_owned(),
+            AuthenticationInfo::ApiKey {
+                api_key: FAKE_API_KEY_A.to_owned(),
             },
             true,
             ResponseCache::Disabled,
@@ -2967,9 +2940,8 @@ mod tests {
     fn with_base_url_strips_legacy_api_suffix() {
         let api = AntithesisApi::build(
             &Settings::for_test_base_url("http://example.com/api/v1/"),
-            AuthenticationInfo::Password {
-                username: FAKE_USERNAME.to_owned(),
-                password: FAKE_PASSWORD.to_owned(),
+            AuthenticationInfo::ApiKey {
+                api_key: FAKE_API_KEY_A.to_owned(),
             },
             true,
             ResponseCache::Disabled,
@@ -2998,7 +2970,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn launch_test_uses_basic_auth() {
+    async fn launch_test_sends_the_credential() {
         let mock_server = mock_launch_test(202, LAUNCH_OK_BODY).await;
 
         let api = test_api_optionally_with_cache(&mock_server, None);
@@ -3022,7 +2994,7 @@ mod tests {
                 .unwrap()
                 .to_str()
                 .unwrap(),
-            FAKE_BASIC_AUTHORIZATION
+            format!("Bearer {FAKE_API_KEY_A}")
         );
         assert_eq!(
             requests[0].body_json::<serde_json::Value>().unwrap(),
@@ -3363,10 +3335,10 @@ mod tests {
             let api = test_api_optionally_with_cache(&mock_server, None);
             let report = api.get_registry().await.unwrap_err();
             assert_eq!(crate::error::api_error_status(&report), Some(status));
-            // The test client authenticates with a username and password.
+            // The test client authenticates with an API key.
             assert_eq!(
                 report.to_string(),
-                "the Antithesis API rejected the username and password"
+                "the Antithesis API rejected the API key"
             );
             let debug = format!("{report:?}");
             match note {
@@ -4679,9 +4651,8 @@ mod tests {
         std::fs::write(&bogus, b"").unwrap();
         let api = AntithesisApi::build(
             &Settings::for_test_base_url(&mock_server.uri()),
-            AuthenticationInfo::Password {
-                username: FAKE_USERNAME.to_owned(),
-                password: FAKE_PASSWORD.to_owned(),
+            AuthenticationInfo::ApiKey {
+                api_key: FAKE_API_KEY_A.to_owned(),
             },
             false,
             ResponseCache::Dir(bogus),

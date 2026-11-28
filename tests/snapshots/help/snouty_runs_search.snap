@@ -9,8 +9,8 @@ For how a run is structured (timelines, input_hash, vtime), read
 How to read the results: The output is a sample of the matching events, and they
 can come from different timelines. The server returns at most --limit events
 (default 50, maximum 999) in no fixed order. When the output reaches the limit,
-snouty warns that additional results may be available. Then any count or pattern
-in the output holds for the sample, not for the run: if all 50 events come from
+snouty notes that the events were randomly sampled. Then any count or pattern in
+the output holds for the sample, not for the run: if all 50 events come from
 node-0, other nodes can still have matches. An event missing from the output can
 still be in the run. Fewer events than the limit means the query matched only
 those events. Two events that conflict in one history (for example, two nodes

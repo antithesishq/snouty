@@ -2005,10 +2005,10 @@ def rows_at_most_with_run_cells(limit: int):
     return chk
 
 
-def rows_at_most_with_limit_note(limit: int):
-    """`rows_at_most`, plus the note that names the limit.
+def rows_at_most_with_sample_note(limit: int):
+    """`rows_at_most`, plus the note that the events were randomly sampled.
 
-    The note claims more results may exist, so it belongs only when the server
+    The note implies more events match, so it belongs only when the server
     filled the limit, and it replaces the end-of-stream marker. Fewer rows than
     asked for means the result set is exhausted: the marker appears and the
     note must be absent.
@@ -2016,7 +2016,11 @@ def rows_at_most_with_limit_note(limit: int):
 
     def chk(sr: StoryRun, reg: Registry) -> tuple[bool, str]:
         n = len(sr.rows or [])
-        noted = f"Showing up to {limit} results." in sr.result.combined
+        noun = "event" if limit == 1 else "events"
+        noted = (
+            f"showing {limit} randomly sampled {noun}; raise the limit for more"
+            in sr.result.combined
+        )
         ended = END_OF_STREAM in sr.result.combined
         filled = n == limit
         ok = 1 <= n <= limit and noted == filled and ended != filled
@@ -3235,7 +3239,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "A `moment INPUT_HASH` divider groups `VTIME [source] payload` lines. Its "
             "hash is sufficient for `runs logs` to stream to the end of its branch. "
             "When more events match than the default limit of "
-            "50, a stderr note says the output stopped at the limit.",
+            "50, a stderr note says the events were randomly sampled.",
             ["runs", "events", d.success, "--match", kw],
             event_keyword_present(kw),
         ),
@@ -3247,7 +3251,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             "server-side.",
             f"At least one row, and every row's raw JSON contains both '{kw}' and '{kw2}'. "
             "When more events match than the default limit of 50, a stderr note says "
-            "the output stopped at the limit.",
+            "the events were randomly sampled.",
             ["runs", "events", d.success, "--match", kw, "--match", kw2],
             event_multi_match(kw, kw2),
         ),
@@ -3282,18 +3286,18 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
             f"At least one matching event line, keyword '{kw}' visible. A `moment INPUT_HASH` "
             "divider groups `VTIME [source] payload` lines. Its hash is sufficient for "
             "`runs logs` to stream to the end of its branch. When more "
-            "events match than the default limit of 50, a stderr note says the output "
-            "stopped at the limit.",
+            "events match than the default limit of 50, a stderr note says the events "
+            "were randomly sampled.",
             ["runs", "search", d.success, f'contains({{output_text: "{kw}"}})'],
             event_keyword_present(kw),
         ),
         Story(
             "runs-search-limit",
             "Cap a DSL query at -n 3",
-            "I want only the first few matches, not the whole stream — and I want to "
-            "know whether the first few are all of them.",
+            "I want only a few matches, not the whole stream — and I want to "
+            "know whether those are all of them.",
             "At most 3 event lines, then the command exits promptly. With 3 lines, a "
-            "stderr note names the limit and says more results may be available; with "
+            "stderr note says the events were randomly sampled; with "
             "fewer, the end-of-stream marker follows instead.",
             [
                 "runs",
@@ -3303,7 +3307,7 @@ def build_stories(d: Discovery, guard: LaunchGuard | None = None) -> list[Story]
                 "-n",
                 "3",
             ],
-            rows_at_most_with_limit_note(3),
+            rows_at_most_with_sample_note(3),
         ),
         Story(
             "runs-search-no-results",

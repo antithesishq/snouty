@@ -29,8 +29,8 @@ use crate::event_render::{EventStreamRenderer, normalize_terminal_text, strip_an
 use crate::event_set_dsl;
 use crate::ndjson::JsonStream;
 use crate::render::{
-    CodeSpans, OutputOptions, indent_lines, render_kv, sanitize, sanitize_multiline, shell_command,
-    wrap_if_tty, wrap_text,
+    CodeSpans, OutputOptions, count, indent_lines, render_kv, sanitize, sanitize_multiline,
+    shell_command, wrap_if_tty, wrap_text,
 };
 use crate::settings::Settings;
 use crate::stdio;
@@ -45,30 +45,6 @@ mod run_stream;
 use event_search::EventOutput;
 use ready::{Needs, RetryDecision, RetryPolicy};
 
-/// The note a limited command prints to stderr under its output. The command
-/// asks the server for at most `limit` rows and cannot tell whether more
-/// match, so the note names the limit instead of a truncation.
-///
-/// It only applies when the server filled the limit. Fewer rows than asked for
-/// means the result set is exhausted, and the note would send the user back for
-/// rows that do not exist, so `shown` below `limit` prints nothing. Callers
-/// print it in text mode only. `blank_line_before` sets the note apart from
-/// output whose blocks are separated by blank lines.
-fn limit_note(shown: usize, limit: NonZeroU64, noun: &str, blank_line_before: bool) {
-    if (shown as u64) < limit.get() {
-        return;
-    }
-    if blank_line_before {
-        eprintln!();
-    }
-    eprintln!(
-        "{}",
-        wrap_if_tty(&format!(
-            "Showing up to {limit} {noun}. Additional {noun} may be available."
-        ))
-    );
-}
-
 /// Print a rendered event stream, then the text-mode commentary under it.
 /// Rows go out one at a time, because the search backend holds the connection
 /// open on an in-progress run and a row that sits in a buffer waiting for EOF
@@ -76,10 +52,10 @@ fn limit_note(shown: usize, limit: NonZeroU64, noun: &str, blank_line_before: bo
 ///
 /// Commentary goes to stderr and only in text mode: under `--json` the rows
 /// are the whole answer. An empty stream gets `empty_message`. A stream that
-/// filled its `limit` gets the limit note, and any other stream gets an end
-/// marker, so a quiet stream doesn't read as one cut short. Either one is set
-/// apart by a blank line because the text rendering separates its moment
-/// blocks with blank lines.
+/// filled its `limit` gets a note that the events were randomly sampled, and
+/// any other stream gets an end marker, so a quiet stream doesn't read as one
+/// cut short. Either one is set apart by a blank line because the text
+/// rendering separates its moment blocks with blank lines.
 async fn print_event_lines(
     mut lines: BoxStream<'_, Result<String>>,
     output: EventOutput,
@@ -101,10 +77,14 @@ async fn print_event_lines(
         eprintln!("{empty_message}");
         return Ok(());
     }
-    // A filled limit means more rows may exist, so the limit note replaces
-    // the end marker.
     match limit {
-        Some(limit) if seen as u64 >= limit.get() => limit_note(seen, limit, "results", true),
+        Some(limit) if seen as u64 >= limit.get() => eprintln!(
+            "\n{}",
+            wrap_if_tty(&format!(
+                "showing {}; raise the limit for more",
+                count(limit.get(), "randomly sampled event")
+            ))
+        ),
         _ => eprintln!("\n— end of stream"),
     }
     Ok(())
@@ -362,7 +342,20 @@ async fn cmd_runs_list(
         let width = terminal_width();
         outln!("{}", render_runs_table(&runs, width))?;
     }
-    limit_note(runs.len(), args.limit, "results", args.detail);
+    // Fewer runs than the limit means there are no more, so only a filled
+    // limit gets the note. `--detail` separates its blocks with blank lines.
+    if runs.len() as u64 >= args.limit.get() {
+        if args.detail {
+            eprintln!();
+        }
+        eprintln!(
+            "{}",
+            wrap_if_tty(&format!(
+                "Showing up to {} results. Additional results may be available.",
+                args.limit
+            ))
+        );
+    }
     Ok(())
 }
 

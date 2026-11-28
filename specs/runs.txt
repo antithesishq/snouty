@@ -1023,14 +1023,13 @@ mock-runs-server
 snouty --json runs events $R_run_id --match parallel_driver_fetch
 [!staging] stdout '"vtime":401\.75'
 
-# A note on stderr names the limit: three events match and the first two
-# print.
+# Three events match and two print.
 mock-runs-server
 [!staging] snouty runs events $R_run_id --match parallel_driver_fetch --limit 2
 [!staging] stdout '400\.5'
 [!staging] stdout '401\.75'
 [!staging] ! stdout '402\.0'
-[!staging] stderr '^\nShowing up to 2 results\. Additional results may be available\.'
+[!staging] stderr '^\nshowing 2 randomly sampled events; raise the limit for more'
 # The note replaces the end marker, because more events may exist.
 [!staging] ! stderr 'end of stream'
 # `--json` never carries the note; the output itself is still capped.
@@ -1038,13 +1037,13 @@ mock-runs-server
 [!staging] snouty --json runs events $R_run_id --match parallel_driver_fetch --limit 2
 [!staging] stdout '"vtime":401\.75'
 [!staging] ! stdout '"vtime":402\.0'
-[!staging] ! stderr 'Showing up to'
+[!staging] ! stderr 'randomly sampled'
 # An empty result prints its own note instead.
 mock-runs-server
 [!staging] snouty runs events $R_run_id --match zzz-no-such-needle --limit 2
 [!staging] stderr 'No events matched'
 [!staging] ! stderr 'end of stream'
-[!staging] ! stderr 'Showing up to'
+[!staging] ! stderr 'randomly sampled'
 
 # `--limit 0` is rejected by clap before any request: the server's accepted
 # range starts at 1.
@@ -1070,7 +1069,7 @@ mock-runs-server
 [!staging] snouty runs events $R_run_id --match parallel_driver_fetch --limit 1
 [!staging] stdout '400\.5'
 [!staging] ! stdout '401\.75'
-[!staging] stderr '^\nShowing up to 1 results\. Additional results may be available\.'
+[!staging] stderr '^\nshowing 1 randomly sampled event; raise the limit for more'
 [!staging] ! stderr 'end of stream'
 
 # The tenant is assumed to serve the search endpoint, so its 404 simply means
@@ -1125,9 +1124,9 @@ mock-runs-server
 [!staging] stdout '^moment -456$'
 [!staging] stdout '^2\.0       \[app\] \{"level":"warn","msg":"slow request"\}$'
 ! stdout '^HASH\s+VTIME\s+SOURCE\s+OUTPUT'
-# Results under the limit end with the marker, and no limit note.
+# Results under the limit end with the marker, and no sample note.
 [!staging] stderr '^\n— end of stream$'
-[!staging] ! stderr 'Showing up to'
+[!staging] ! stderr 'randomly sampled'
 
 # `--json` passes the NDJSON through, vtime normalized to an exact JSON number.
 mock-runs-server
@@ -1142,25 +1141,25 @@ snouty --json runs search $R_run_id 'contains({output_text: "parallel_driver_fet
 [!staging] stdout '"vtime":400\.5'
 [!staging] ! stdout '"vtime":401\.75'
 
-# In text mode a note on stderr names the limit.
+# Text mode prints the sample note.
 mock-runs-server
 [!staging] snouty runs search $R_run_id 'contains({output_text: "parallel_driver_fetch"})' --limit 1
 [!staging] stdout '400\.5'
-[!staging] stderr '^\nShowing up to 1 results\. Additional results may be available\.'
+[!staging] stderr '^\nshowing 1 randomly sampled event; raise the limit for more'
 [!staging] ! stderr 'end of stream'
 
 # `--follow` with a limit prints the note too: the stream stops at the limit.
 mock-runs-server
 [!staging] snouty runs search $R_run_id 'contains({output_text: "parallel_driver_fetch"})' --follow --limit 1
 [!staging] stdout '400\.5'
-[!staging] stderr '^\nShowing up to 1 results\. Additional results may be available\.'
+[!staging] stderr '^\nshowing 1 randomly sampled event; raise the limit for more'
 [!staging] ! stderr 'end of stream'
 
 # An empty result prints its own note instead.
 mock-runs-server
 [!staging] snouty runs search $R_run_id 'contains({output_text: "zzz-no-such-needle"})' --limit 5
 [!staging] stderr 'No events matched the query\.'
-[!staging] ! stderr 'Showing up to'
+[!staging] ! stderr 'randomly sampled'
 
 # `--limit 0` is rejected by clap before any request.
 mock-runs-server
